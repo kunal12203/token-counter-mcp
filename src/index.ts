@@ -424,6 +424,47 @@ function createMcpServer(): Server {
   return s;
 }
 
+// ─── Rate limiter (per IP, in-memory) ────────────────────────────────────────
+const RATE_LIMIT = 60;          // max requests per window
+const RATE_WINDOW_MS = 60_000;  // 1-minute window
+
+interface RateBucket { count: number; resetAt: number }
+const rateBuckets = new Map<string, RateBucket>();
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, bucket] of rateBuckets) {
+    if (now >= bucket.resetAt) rateBuckets.delete(ip);
+  }
+}, RATE_WINDOW_MS);
+
+function getClientIp(req: http.IncomingMessage): string {
+  const forwarded = req.headers["x-forwarded-for"];
+  if (typeof forwarded === "string") return forwarded.split(",")[0].trim();
+  return req.socket.remoteAddress ?? "unknown";
+}
+
+function checkRateLimit(req: http.IncomingMessage, res: http.ServerResponse): boolean {
+  const ip = getClientIp(req);
+  const now = Date.now();
+  let bucket = rateBuckets.get(ip);
+  if (!bucket || now >= bucket.resetAt) {
+    bucket = { count: 0, resetAt: now + RATE_WINDOW_MS };
+    rateBuckets.set(ip, bucket);
+  }
+  bucket.count++;
+  if (bucket.count > RATE_LIMIT) {
+    const retryAfter = Math.ceil((bucket.resetAt - now) / 1000);
+    res.writeHead(429, {
+      "Content-Type": "application/json",
+      "Retry-After": String(retryAfter),
+    });
+    res.end(JSON.stringify({ error: "Rate limit exceeded. Max 60 requests/minute." }));
+    return false;
+  }
+  return true;
+}
+
 async function startHttpServer(port: number) {
   const transports = new Map<string, SSEServerTransport>();
 
@@ -447,6 +488,7 @@ async function startHttpServer(port: number) {
 
     // SSE endpoint — MCP client opens a persistent GET connection here
     if (url.pathname === "/sse" && req.method === "GET") {
+      if (!checkRateLimit(req, res)) return;
       const transport = new SSEServerTransport("/messages", res);
       transports.set(transport.sessionId, transport);
 
@@ -459,6 +501,7 @@ async function startHttpServer(port: number) {
 
     // Message endpoint — MCP client POSTs JSON-RPC messages here
     if (url.pathname === "/messages" && req.method === "POST") {
+      if (!checkRateLimit(req, res)) return;
       const sessionId = url.searchParams.get("sessionId") ?? "";
       const transport = transports.get(sessionId);
       if (!transport) {
