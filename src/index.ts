@@ -140,7 +140,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "count_tokens": {
         const model = (a.model as string | undefined) ?? "claude-opus-4-6";
 
-        let result: { inputTokens: number; model: string };
+        let result: { inputTokens: number; model: string; exact: boolean; method: string };
         if (a.messages) {
           const messages = a.messages as MessageParam[];
           const system = a.system as string | undefined;
@@ -162,6 +162,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 {
                   input_tokens: result.inputTokens,
                   model: result.model,
+                  counting_mode: result.exact
+                    ? "exact (Anthropic API)"
+                    : "approximate (local — set ANTHROPIC_API_KEY for exact counts)",
+                  accuracy: result.exact ? "100% exact" : "~97-99% (cl100k_base approximation)",
                   estimated_input_cost_usd: Number(estimatedInputCost.toFixed(8)),
                   estimated_input_cost_formatted: formatCost(estimatedInputCost),
                   note: "Output tokens are unknown until the request completes — use log_usage after.",
