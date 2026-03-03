@@ -1,6 +1,8 @@
 #!/usr/bin/env node
+import http from "http";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -10,14 +12,11 @@ import { countTextTokens, countMessageTokens, type MessageParam } from "./tokeni
 import { addUsageEntry, loadSession, resetSession, getHistory } from "./storage.js";
 import { calculateCost, getPricing, formatCost, formatTokens } from "./costs.js";
 
-const server = new Server(
-  { name: "token-counter-mcp", version: "1.0.0" },
-  { capabilities: { tools: {} } },
-);
+// ─── Handler registration (called on each Server instance) ───────────────────
 
-// ─── Tool Definitions ────────────────────────────────────────────────────────
+function registerHandlers(s: Server): void {
 
-server.setRequestHandler(ListToolsRequestSchema, async () => ({
+s.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
       name: "count_tokens",
@@ -130,7 +129,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 
 // ─── Tool Handlers ────────────────────────────────────────────────────────────
 
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
+s.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
   const a = (args ?? {}) as Record<string, unknown>;
 
@@ -397,12 +396,101 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
+} // end registerHandlers
+
+// ─── Default server instance (stdio) ─────────────────────────────────────────
+
+const server = new Server(
+  { name: "token-counter-mcp", version: "1.0.0" },
+  { capabilities: { tools: {} } },
+);
+registerHandlers(server);
+
 // ─── Start ────────────────────────────────────────────────────────────────────
 
+function addCorsHeaders(res: http.ServerResponse) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+}
+
+/** Build a fresh MCP Server instance with all tools registered. */
+function createMcpServer(): Server {
+  const s = new Server(
+    { name: "token-counter-mcp", version: "1.0.0" },
+    { capabilities: { tools: {} } },
+  );
+  registerHandlers(s);
+  return s;
+}
+
+async function startHttpServer(port: number) {
+  const transports = new Map<string, SSEServerTransport>();
+
+  const httpServer = http.createServer(async (req, res) => {
+    addCorsHeaders(res);
+
+    if (req.method === "OPTIONS") {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
+    const url = new URL(req.url ?? "/", `http://localhost:${port}`);
+
+    // Health check — Railway uses this to confirm the service is up
+    if (url.pathname === "/health") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ status: "ok", service: "token-counter-mcp", sessions: transports.size }));
+      return;
+    }
+
+    // SSE endpoint — MCP client opens a persistent GET connection here
+    if (url.pathname === "/sse" && req.method === "GET") {
+      const transport = new SSEServerTransport("/messages", res);
+      transports.set(transport.sessionId, transport);
+
+      transport.onclose = () => transports.delete(transport.sessionId);
+
+      const sessionServer = createMcpServer();
+      await sessionServer.connect(transport);
+      return;
+    }
+
+    // Message endpoint — MCP client POSTs JSON-RPC messages here
+    if (url.pathname === "/messages" && req.method === "POST") {
+      const sessionId = url.searchParams.get("sessionId") ?? "";
+      const transport = transports.get(sessionId);
+      if (!transport) {
+        res.writeHead(404, { "Content-Type": "text/plain" });
+        res.end(`Session "${sessionId}" not found — connect via /sse first`);
+        return;
+      }
+      await transport.handlePostMessage(req, res);
+      return;
+    }
+
+    res.writeHead(404);
+    res.end();
+  });
+
+  httpServer.listen(port, () => {
+    process.stderr.write(`Token Counter MCP running on port ${port}\n`);
+    process.stderr.write(`SSE endpoint: http://0.0.0.0:${port}/sse\n`);
+  });
+}
+
 async function main() {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  // MCP servers communicate via stdio — no console.log to stdout
+  const port = process.env.PORT ? parseInt(process.env.PORT) : null;
+
+  if (port) {
+    // HTTP/SSE mode — Railway sets PORT automatically
+    await startHttpServer(port);
+  } else {
+    // stdio mode — local Claude Code use
+    const transport = new StdioServerTransport();
+    await server.connect(transport);
+  }
 }
 
 main().catch((err) => {
