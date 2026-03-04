@@ -1,0 +1,15 @@
+# Development files
+src/
+tsconfig.json
+*.tgz
+test-remote.mjs
+publish.sh
+railway.json
+
+# Local tooling
+.dual-graph/
+.claude/
+CLAUDE.md
+
+# Misc
+*.log
