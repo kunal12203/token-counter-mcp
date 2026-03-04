@@ -12,6 +12,8 @@ export interface UsageEntry {
   timestamp: string;
   model: string;
   description?: string;
+  project?: string;
+  sessionId?: string;
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
@@ -34,6 +36,26 @@ export interface SessionData {
     cacheWriteTokens: number;
     totalCost: number;
   };
+}
+
+export interface SessionGroup {
+  sessionId: string;
+  startedAt: string;
+  endedAt: string;
+  totalCost: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  entryCount: number;
+}
+
+export interface ProjectGroup {
+  project: string;
+  displayName: string;
+  totalCost: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  lastActiveAt: string;
+  sessions: SessionGroup[];
 }
 
 function ensureStorageDir(): void {
@@ -92,14 +114,20 @@ export function addUsageEntry(
   cacheReadTokens: number,
   cacheWriteTokens: number,
   description?: string,
+  project?: string,
 ): UsageEntry {
   const costs = calculateCost(model, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens);
+
+  // Load session first so we can attach sessionId
+  const session = loadSession();
 
   const entry: UsageEntry = {
     id: generateId(),
     timestamp: new Date().toISOString(),
     model,
     description,
+    project,
+    sessionId: session.sessionId,
     inputTokens,
     outputTokens,
     cacheReadTokens,
@@ -108,7 +136,6 @@ export function addUsageEntry(
   };
 
   // Update session
-  const session = loadSession();
   session.entries.push(entry);
   session.totals.inputTokens += inputTokens;
   session.totals.outputTokens += outputTokens;
@@ -152,4 +179,81 @@ export function getHistory(limit = 20): UsageEntry[] {
     // ignore
   }
   return [];
+}
+
+export function getGroupedHistory(): ProjectGroup[] {
+  ensureStorageDir();
+  let history: UsageEntry[] = [];
+  try {
+    if (fs.existsSync(HISTORY_FILE)) {
+      const raw = fs.readFileSync(HISTORY_FILE, "utf8");
+      history = JSON.parse(raw) as UsageEntry[];
+    }
+  } catch {
+    return [];
+  }
+
+  // Group entries by project
+  const byProject = new Map<string, UsageEntry[]>();
+  for (const entry of history) {
+    const proj = entry.project ?? "(no project)";
+    if (!byProject.has(proj)) byProject.set(proj, []);
+    byProject.get(proj)!.push(entry);
+  }
+
+  const groups: ProjectGroup[] = [];
+
+  for (const [project, entries] of byProject) {
+    // Within each project, group by sessionId
+    const bySession = new Map<string, UsageEntry[]>();
+    for (const entry of entries) {
+      const sid = entry.sessionId ?? "unknown";
+      if (!bySession.has(sid)) bySession.set(sid, []);
+      bySession.get(sid)!.push(entry);
+    }
+
+    const sessions: SessionGroup[] = [];
+    for (const [sessionId, sEntries] of bySession) {
+      const sorted = [...sEntries].sort(
+        (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
+      );
+      sessions.push({
+        sessionId,
+        startedAt: sorted[0].timestamp,
+        endedAt: sorted[sorted.length - 1].timestamp,
+        totalCost: sEntries.reduce((acc, e) => acc + e.totalCost, 0),
+        totalInputTokens: sEntries.reduce((acc, e) => acc + e.inputTokens, 0),
+        totalOutputTokens: sEntries.reduce((acc, e) => acc + e.outputTokens, 0),
+        entryCount: sEntries.length,
+      });
+    }
+
+    // Sort sessions newest first
+    sessions.sort(
+      (a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime(),
+    );
+
+    const lastActiveAt = sessions[0]?.startedAt ?? entries[entries.length - 1]?.timestamp ?? "";
+    const displayName =
+      project === "(no project)"
+        ? "(no project)"
+        : path.basename(project);
+
+    groups.push({
+      project,
+      displayName,
+      totalCost: entries.reduce((acc, e) => acc + e.totalCost, 0),
+      totalInputTokens: entries.reduce((acc, e) => acc + e.inputTokens, 0),
+      totalOutputTokens: entries.reduce((acc, e) => acc + e.outputTokens, 0),
+      lastActiveAt,
+      sessions,
+    });
+  }
+
+  // Sort by most recently active
+  groups.sort(
+    (a, b) => new Date(b.lastActiveAt).getTime() - new Date(a.lastActiveAt).getTime(),
+  );
+
+  return groups;
 }

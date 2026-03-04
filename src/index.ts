@@ -10,11 +10,10 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 
 import { countTextTokens, countMessageTokens, type MessageParam } from "./tokenizer.js";
-import { addUsageEntry, loadSession, resetSession, getHistory } from "./storage.js";
+import { addUsageEntry, loadSession, resetSession, getHistory, getGroupedHistory } from "./storage.js";
 import { calculateCost, getPricing, formatCost, formatTokens } from "./costs.js";
 
 // ─── Dashboard event bus ──────────────────────────────────────────────────────
-// Fires "update" whenever log_usage is called so live dashboard clients refresh.
 const usageEmitter = new EventEmitter();
 usageEmitter.setMaxListeners(100);
 
@@ -24,139 +23,347 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Token Counter — Live Dashboard</title>
+  <title>Token Counter</title>
   <style>
-    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-    body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;background:#0d1117;color:#c9d1d9;min-height:100vh;padding:24px 20px}
-    .header{display:flex;align-items:center;gap:10px;margin-bottom:5px}
-    h1{font-size:1.2rem;font-weight:600;color:#f0f6fc}
-    .dot{width:9px;height:9px;border-radius:50%;background:#3fb950;flex-shrink:0;animation:pulse 2s ease-in-out infinite}
-    .dot.off{background:#f85149;animation:none}
-    @keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.5;transform:scale(.85)}}
-    .sub{color:#8b949e;font-size:.78rem;margin-bottom:22px}
-    .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(155px,1fr));gap:10px;margin-bottom:22px}
-    .card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:14px 16px}
-    .card-label{font-size:.68rem;text-transform:uppercase;letter-spacing:.06em;color:#8b949e;margin-bottom:7px}
-    .card-value{font-size:1.5rem;font-weight:700;color:#f0f6fc;line-height:1}
-    .card-value.purple{color:#d2a8ff}
-    .card-note{font-size:.65rem;color:#6e7681;margin-top:3px}
-    h2{font-size:.75rem;text-transform:uppercase;letter-spacing:.07em;color:#8b949e;margin-bottom:9px}
-    .wrap{background:#161b22;border:1px solid #30363d;border-radius:8px;overflow:hidden}
-    table{width:100%;border-collapse:collapse;font-size:.82rem}
-    th{padding:9px 13px;text-align:left;font-size:.66rem;text-transform:uppercase;letter-spacing:.05em;color:#8b949e;background:#161b22;border-bottom:1px solid #30363d;white-space:nowrap}
-    td{padding:9px 13px;border-bottom:1px solid #21262d;white-space:nowrap}
-    tr:last-child td{border-bottom:none}
-    .badge{display:inline-block;padding:2px 7px;border-radius:4px;font-size:.71rem;background:#1c2a4a;color:#58a6ff;font-weight:500}
-    .cost{color:#d2a8ff;font-weight:500}
-    .dim{color:#6e7681}
-    .new td{background:#1a2e1a!important;transition:background 1.5s ease}
-    .empty{text-align:center;padding:38px;color:#6e7681;font-size:.83rem}
+    :root {
+      --bg: #07090f;
+      --surface: rgba(255,255,255,0.035);
+      --surface-hover: rgba(255,255,255,0.06);
+      --border: rgba(255,255,255,0.07);
+      --border-bright: rgba(255,255,255,0.14);
+      --text: #f1f5f9;
+      --text-sec: #94a3b8;
+      --text-dim: #475569;
+      --purple: #a78bfa;
+      --purple-dim: rgba(167,139,250,0.12);
+      --blue: #38bdf8;
+      --blue-dim: rgba(56,189,248,0.1);
+      --pink: #f472b6;
+      --green: #34d399;
+      --green-dim: rgba(52,211,153,0.12);
+      --red-dim: rgba(248,113,113,0.12);
+      --red: #f87171;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      -webkit-font-smoothing: antialiased;
+    }
+    /* Ambient mesh */
+    body::before {
+      content: '';
+      position: fixed; inset: 0;
+      background:
+        radial-gradient(ellipse 700px 500px at 15% 15%, rgba(167,139,250,0.07) 0%, transparent 65%),
+        radial-gradient(ellipse 500px 700px at 85% 85%, rgba(56,189,248,0.055) 0%, transparent 65%),
+        radial-gradient(ellipse 400px 300px at 70% 5%, rgba(244,114,182,0.045) 0%, transparent 55%);
+      pointer-events: none; z-index: 0;
+    }
+    .wrap { position: relative; z-index: 1; max-width: 1100px; margin: 0 auto; padding: 28px 20px 60px; }
+
+    /* ── Header ── */
+    .hdr { display: flex; align-items: center; justify-content: space-between; margin-bottom: 36px; gap: 12px; }
+    .hdr-left { display: flex; align-items: center; gap: 12px; }
+    .logo {
+      width: 38px; height: 38px; border-radius: 11px; flex-shrink: 0;
+      background: linear-gradient(135deg, #a78bfa 0%, #38bdf8 100%);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 19px; box-shadow: 0 0 20px rgba(167,139,250,0.25);
+    }
+    .hdr h1 { font-size: 1.05rem; font-weight: 600; letter-spacing: -0.02em; color: var(--text); }
+    .hdr-sub { font-size: 0.72rem; color: var(--text-dim); margin-top: 1px; }
+    .badge {
+      display: flex; align-items: center; gap: 6px;
+      border-radius: 100px; padding: 4px 11px;
+      font-size: 0.68rem; font-weight: 600; letter-spacing: 0.06em;
+      background: var(--green-dim); border: 1px solid rgba(52,211,153,0.22);
+      color: var(--green); transition: all 0.3s;
+    }
+    .badge.off { background: var(--red-dim); border-color: rgba(248,113,113,0.22); color: var(--red); }
+    .badge-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: blink 2s ease-in-out infinite; }
+    @keyframes blink { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.45;transform:scale(.75)} }
+    .hdr-time { font-size: 0.72rem; color: var(--text-dim); text-align: right; line-height: 1.5; }
+
+    /* ── Section label ── */
+    .sec-label {
+      font-size: 0.62rem; font-weight: 700; letter-spacing: 0.12em;
+      text-transform: uppercase; color: var(--text-dim); margin-bottom: 11px;
+    }
+
+    /* ── Stat cards ── */
+    .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(145px, 1fr)); gap: 9px; margin-bottom: 36px; }
+    .card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 13px; padding: 16px 15px; cursor: default;
+      transition: border-color 0.2s, background 0.2s, transform 0.15s;
+    }
+    .card:hover { border-color: var(--border-bright); background: var(--surface-hover); transform: translateY(-1px); }
+    .card-lbl { font-size: 0.63rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.09em; color: var(--text-dim); margin-bottom: 9px; }
+    .card-val { font-size: 1.6rem; font-weight: 700; letter-spacing: -0.04em; line-height: 1; color: var(--text); }
+    .card-val.grad {
+      background: linear-gradient(130deg, #a78bfa 0%, #f472b6 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+    }
+    .card-note { font-size: 0.6rem; color: var(--text-dim); margin-top: 5px; }
+
+    /* ── Projects ── */
+    .projects { margin-bottom: 36px; }
+    .proj-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 13px; margin-bottom: 7px; overflow: hidden;
+      transition: border-color 0.2s;
+    }
+    .proj-card:hover { border-color: var(--border-bright); }
+    .proj-hdr {
+      display: flex; align-items: center; padding: 13px 16px;
+      cursor: pointer; gap: 12px; user-select: none;
+      transition: background 0.15s;
+    }
+    .proj-hdr:hover { background: rgba(255,255,255,0.02); }
+    .proj-icon {
+      width: 34px; height: 34px; border-radius: 9px; flex-shrink: 0;
+      background: linear-gradient(135deg, rgba(167,139,250,0.2), rgba(56,189,248,0.15));
+      border: 1px solid rgba(167,139,250,0.15);
+      display: flex; align-items: center; justify-content: center; font-size: 15px;
+    }
+    .proj-info { flex: 1; min-width: 0; }
+    .proj-name { font-size: 0.87rem; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .proj-path { font-size: 0.65rem; color: var(--text-dim); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .proj-stats { display: flex; align-items: center; gap: 20px; flex-shrink: 0; }
+    .proj-stat { text-align: right; }
+    .proj-stat-val { font-size: 0.88rem; font-weight: 600; color: var(--purple); }
+    .proj-stat-lbl { font-size: 0.6rem; color: var(--text-dim); margin-top: 1px; }
+    .chevron {
+      width: 14px; height: 14px; flex-shrink: 0; color: var(--text-dim);
+      transition: transform 0.2s;
+    }
+    .proj-card.open .chevron { transform: rotate(90deg); }
+    /* Cost bar under proj header */
+    .proj-bar-wrap { height: 2px; background: rgba(255,255,255,0.05); margin: 0 16px; border-radius: 2px; overflow: hidden; }
+    .proj-bar { height: 100%; background: linear-gradient(90deg, #a78bfa, #f472b6); border-radius: 2px; transition: width 0.6s ease; }
+    /* Sessions */
+    .proj-sessions { display: none; border-top: 1px solid var(--border); }
+    .proj-card.open .proj-sessions { display: block; }
+    .sess-row {
+      display: flex; align-items: center; gap: 12px;
+      padding: 9px 16px 9px 52px;
+      border-bottom: 1px solid rgba(255,255,255,0.04);
+      transition: background 0.15s;
+    }
+    .sess-row:last-child { border-bottom: none; }
+    .sess-row:hover { background: rgba(255,255,255,0.02); }
+    .sess-indicator { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; background: var(--text-dim); }
+    .sess-indicator.active { background: var(--green); box-shadow: 0 0 6px rgba(52,211,153,0.5); }
+    .sess-time { font-size: 0.78rem; color: var(--text-sec); flex: 1; }
+    .sess-tokens { font-size: 0.7rem; color: var(--text-dim); }
+    .sess-calls { font-size: 0.7rem; color: var(--text-dim); min-width: 50px; text-align: right; }
+    .sess-cost { font-size: 0.82rem; font-weight: 600; color: var(--purple); min-width: 72px; text-align: right; }
+
+    /* ── Table ── */
+    .tbl-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: 13px; overflow: hidden; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+    thead th {
+      padding: 10px 15px; text-align: left; white-space: nowrap;
+      font-size: 0.61rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em;
+      color: var(--text-dim); background: rgba(0,0,0,0.18); border-bottom: 1px solid var(--border);
+    }
+    tbody td { padding: 9px 15px; border-bottom: 1px solid rgba(255,255,255,0.038); white-space: nowrap; vertical-align: middle; }
+    tbody tr:last-child td { border-bottom: none; }
+    tbody tr { transition: background 0.12s; }
+    tbody tr:hover td { background: rgba(255,255,255,0.02); }
+    .model-tag {
+      display: inline-block; padding: 2px 8px; border-radius: 6px;
+      font-size: 0.68rem; font-weight: 600;
+      background: var(--blue-dim); color: var(--blue); border: 1px solid rgba(56,189,248,0.15);
+    }
+    .cost-cell { color: var(--purple); font-weight: 600; }
+    .dim { color: var(--text-dim); }
+    .sec { color: var(--text-sec); }
+    @keyframes flash-in {
+      0% { background: rgba(167,139,250,0.12); }
+      100% { background: transparent; }
+    }
+    .flash td { animation: flash-in 1.8s ease forwards; }
+    .empty-cell { text-align: center; padding: 52px 24px; }
+    .empty-icon { font-size: 1.8rem; opacity: 0.3; margin-bottom: 10px; }
+    .empty-text { font-size: 0.82rem; color: var(--text-dim); }
+    .no-proj { background: var(--surface); border: 1px solid var(--border); border-radius: 13px; padding: 32px; text-align: center; color: var(--text-dim); font-size: 0.82rem; line-height: 1.7; }
+    .no-proj code { background: rgba(255,255,255,0.08); border-radius: 4px; padding: 1px 6px; font-family: monospace; font-size: 0.8rem; color: var(--text-sec); }
+
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.09); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.16); }
   </style>
 </head>
 <body>
-  <div class="header">
-    <div class="dot" id="dot"></div>
-    <h1>Token Counter — Live</h1>
-  </div>
-  <p class="sub" id="sub">Connecting…</p>
+<div class="wrap">
 
+  <!-- Header -->
+  <div class="hdr">
+    <div class="hdr-left">
+      <div class="logo">⬡</div>
+      <div>
+        <h1>Token Counter</h1>
+        <div class="hdr-sub" id="session-line">Connecting…</div>
+      </div>
+      <div class="badge" id="badge"><div class="badge-dot"></div><span id="badge-txt">LIVE</span></div>
+    </div>
+    <div class="hdr-time" id="hdr-time"></div>
+  </div>
+
+  <!-- Current session -->
+  <div class="sec-label">Current Session</div>
   <div class="cards">
-    <div class="card">
-      <div class="card-label">Est. Session Cost</div>
-      <div class="card-value purple" id="c-cost">—</div>
-      <div class="card-note">approximate</div>
-    </div>
-    <div class="card">
-      <div class="card-label">Input Tokens</div>
-      <div class="card-value" id="c-in">—</div>
-    </div>
-    <div class="card">
-      <div class="card-label">Output Tokens</div>
-      <div class="card-value" id="c-out">—</div>
-    </div>
-    <div class="card">
-      <div class="card-label">Cache Read</div>
-      <div class="card-value" id="c-cr">—</div>
-    </div>
-    <div class="card">
-      <div class="card-label">Cache Write</div>
-      <div class="card-value" id="c-cw">—</div>
-    </div>
-    <div class="card">
-      <div class="card-label">API Calls</div>
-      <div class="card-value" id="c-n">—</div>
-    </div>
+    <div class="card"><div class="card-lbl">Est. Cost</div><div class="card-val grad" id="c-cost">—</div><div class="card-note">approximate</div></div>
+    <div class="card"><div class="card-lbl">Input Tokens</div><div class="card-val" id="c-in">—</div></div>
+    <div class="card"><div class="card-lbl">Output Tokens</div><div class="card-val" id="c-out">—</div></div>
+    <div class="card"><div class="card-lbl">Cache Read</div><div class="card-val" id="c-cr">—</div></div>
+    <div class="card"><div class="card-lbl">Cache Write</div><div class="card-val" id="c-cw">—</div></div>
+    <div class="card"><div class="card-lbl">API Calls</div><div class="card-val" id="c-n">—</div></div>
   </div>
 
-  <h2>Recent Calls</h2>
-  <div class="wrap">
+  <!-- Projects -->
+  <div class="projects">
+    <div class="sec-label">Projects</div>
+    <div id="proj-list"><div class="no-proj">Loading…</div></div>
+  </div>
+
+  <!-- Recent calls -->
+  <div class="sec-label">Recent Calls</div>
+  <div class="tbl-wrap">
     <table>
       <thead>
-        <tr>
-          <th>Time</th><th>Model</th><th>Description</th>
-          <th>Input</th><th>Output</th><th>Cache R/W</th><th>Est. Cost</th>
-        </tr>
+        <tr><th>Time</th><th>Model</th><th>Project</th><th>Description</th><th>Input</th><th>Output</th><th>Cache R/W</th><th>Cost</th></tr>
       </thead>
       <tbody id="tbody">
-        <tr><td colspan="7" class="empty">Waiting for first log_usage call…</td></tr>
+        <tr><td colspan="8"><div class="empty-cell"><div class="empty-icon">◎</div><div class="empty-text">Waiting for first log_usage call…</div></div></td></tr>
       </tbody>
     </table>
   </div>
 
-  <script>
-    function fmt(n){if(n>=1e6)return(n/1e6).toFixed(1)+'M';if(n>=1000)return(n/1000).toFixed(1)+'k';return String(n)}
-    function cost(usd){
-      if(usd===0)return '~$0.00';
-      if(usd<0.0001)return '~$0.00';
-      const s=parseFloat(usd.toPrecision(2));
-      if(s<0.01)return '~$'+s.toFixed(4);
-      if(s<1)return '~$'+s.toFixed(3);
-      return '~$'+s.toFixed(2);
+</div>
+<script>
+  function fmt(n){n=n||0;if(n>=1e6)return(n/1e6).toFixed(1)+'M';if(n>=1e3)return(n/1e3).toFixed(1)+'k';return String(n)}
+  function fmtCost(u){if(!u||u<0.0001)return '~$0.00';const s=parseFloat(u.toPrecision(2));if(s<0.01)return '~$'+s.toFixed(4);if(s<1)return '~$'+s.toFixed(3);return '~$'+s.toFixed(2)}
+  function hhmm(ts){return new Date(ts).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'})}
+  function dtFmt(ts){const d=new Date(ts);const today=new Date();const isToday=d.toDateString()===today.toDateString();const t=d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});return isToday?'Today · '+t:d.toLocaleDateString([],{month:'short',day:'numeric'})+' · '+t}
+  function mdl(m){return m?(m.replace('claude-','').replace(/-\d{8}$/,'')):'—'}
+  function projBase(p){if(!p||p==='(no project)')return '—';try{return p.split('/').filter(Boolean).pop()||p}catch{return p}}
+
+  const badge=document.getElementById('badge');
+  const badgeTxt=document.getElementById('badge-txt');
+  const sessionLine=document.getElementById('session-line');
+  const hdrTime=document.getElementById('hdr-time');
+  const openProjects=new Set();
+
+  const es=new EventSource('/events');
+  es.onerror=()=>{badge.className='badge off';badgeTxt.textContent='OFFLINE'};
+  es.onopen=()=>{badge.className='badge';badgeTxt.textContent='LIVE'};
+
+  es.onmessage=(e)=>{
+    const d=JSON.parse(e.data);
+    const sess=d.session;
+    const t=sess.totals;
+    const entries=sess.entries||[];
+    const grouped=d.grouped||[];
+
+    // Header
+    const started=new Date(sess.startedAt);
+    sessionLine.textContent='Session since '+started.toLocaleTimeString()+' · '+entries.length+' call'+(entries.length===1?'':'s');
+    hdrTime.innerHTML='Updated '+new Date().toLocaleTimeString()+'<br><span style="color:var(--text-dim);font-size:.66rem">'+started.toLocaleDateString([],{weekday:'short',month:'short',day:'numeric'})+'</span>';
+
+    // Cards
+    document.getElementById('c-cost').textContent=fmtCost(t.totalCost);
+    document.getElementById('c-in').textContent=fmt(t.inputTokens);
+    document.getElementById('c-out').textContent=fmt(t.outputTokens);
+    document.getElementById('c-cr').textContent=fmt(t.cacheReadTokens);
+    document.getElementById('c-cw').textContent=fmt(t.cacheWriteTokens);
+    document.getElementById('c-n').textContent=entries.length;
+
+    // Projects
+    const pl=document.getElementById('proj-list');
+    if(!grouped.length){
+      pl.innerHTML='<div class="no-proj">No project data yet.<br>Pass a <code>project</code> param to <code>log_usage</code> to track usage by folder.</div>';
+    } else {
+      const maxCost=Math.max(...grouped.map(g=>g.totalCost),0.001);
+      const currentSessId=sess.sessionId;
+      pl.innerHTML=grouped.map(g=>{
+        const isOpen=openProjects.has(g.project);
+        const barPct=Math.max(4,Math.round(g.totalCost/maxCost*100));
+        const sessHtml=g.sessions.map(s=>{
+          const isActive=s.sessionId===currentSessId;
+          return \`<div class="sess-row">
+            <div class="sess-indicator\${isActive?' active':''}"></div>
+            <span class="sess-time">\${dtFmt(s.startedAt)}</span>
+            <span class="sess-tokens">\${fmt(s.totalInputTokens+s.totalOutputTokens)} tok</span>
+            <span class="sess-calls">\${s.entryCount} call\${s.entryCount===1?'':'s'}</span>
+            <span class="sess-cost">\${fmtCost(s.totalCost)}</span>
+          </div>\`;
+        }).join('');
+        return \`<div class="proj-card\${isOpen?' open':''}" data-proj="\${g.project}">
+          <div class="proj-hdr" onclick="toggleProj(this.parentElement)">
+            <div class="proj-icon">📁</div>
+            <div class="proj-info">
+              <div class="proj-name">\${g.displayName}</div>
+              <div class="proj-path">\${g.project}</div>
+            </div>
+            <div class="proj-stats">
+              <div class="proj-stat">
+                <div class="proj-stat-val">\${fmtCost(g.totalCost)}</div>
+                <div class="proj-stat-lbl">total cost</div>
+              </div>
+              <div class="proj-stat">
+                <div class="proj-stat-val">\${g.sessions.length}</div>
+                <div class="proj-stat-lbl">session\${g.sessions.length===1?'':'s'}</div>
+              </div>
+              <div class="proj-stat" style="display:none">
+                <div class="proj-stat-val">\${fmt(g.totalInputTokens+g.totalOutputTokens)}</div>
+                <div class="proj-stat-lbl">tokens</div>
+              </div>
+            </div>
+            <svg class="chevron" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/>
+            </svg>
+          </div>
+          <div class="proj-bar-wrap"><div class="proj-bar" style="width:\${barPct}%"></div></div>
+          <div class="proj-sessions">\${sessHtml}</div>
+        </div>\`;
+      }).join('');
     }
-    function hhmm(ts){return new Date(ts).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'})}
-    function mdl(m){return m.replace('claude-','')}
 
-    const dot=document.getElementById('dot');
-    const sub=document.getElementById('sub');
-    const es=new EventSource('/events');
+    // Recent calls table
+    const tbody=document.getElementById('tbody');
+    if(!entries.length){
+      tbody.innerHTML='<tr><td colspan="8"><div class="empty-cell"><div class="empty-icon">◎</div><div class="empty-text">Waiting for first log_usage call…</div></div></td></tr>';
+      return;
+    }
+    const rows=[...entries].reverse().slice(0,30);
+    tbody.innerHTML=rows.map((en,i)=>\`<tr class="\${i===0?'flash':''}">
+      <td class="dim">\${hhmm(en.timestamp)}</td>
+      <td><span class="model-tag">\${mdl(en.model)}</span></td>
+      <td class="dim" title="\${en.project||''}">\${projBase(en.project)}</td>
+      <td class="\${en.description?'sec':'dim'}">\${en.description||'—'}</td>
+      <td class="sec">\${fmt(en.inputTokens)}</td>
+      <td class="sec">\${fmt(en.outputTokens)}</td>
+      <td class="dim">\${fmt(en.cacheReadTokens)}/\${fmt(en.cacheWriteTokens)}</td>
+      <td class="cost-cell">\${fmtCost(en.totalCost)}</td>
+    </tr>\`).join('');
+  };
 
-    es.onerror=()=>{dot.className='dot off';sub.textContent='Disconnected — retrying…'};
-    es.onopen=()=>{dot.className='dot'};
-
-    es.onmessage=(e)=>{
-      const d=JSON.parse(e.data);
-      const t=d.totals;
-      sub.textContent='Session started '+new Date(d.startedAt).toLocaleString()+' · '+d.entries.length+' calls';
-      document.getElementById('c-cost').textContent=cost(t.totalCost);
-      document.getElementById('c-in').textContent=fmt(t.inputTokens);
-      document.getElementById('c-out').textContent=fmt(t.outputTokens);
-      document.getElementById('c-cr').textContent=fmt(t.cacheReadTokens);
-      document.getElementById('c-cw').textContent=fmt(t.cacheWriteTokens);
-      document.getElementById('c-n').textContent=d.entries.length;
-
-      const tbody=document.getElementById('tbody');
-      if(!d.entries.length){
-        tbody.innerHTML='<tr><td colspan="7" class="empty">Waiting for first log_usage call…</td></tr>';
-        return;
-      }
-      tbody.innerHTML=[...d.entries].reverse().slice(0,25).map((entry,i)=>\`
-        <tr class="\${i===0?'new':''}">
-          <td class="dim">\${hhmm(entry.timestamp)}</td>
-          <td><span class="badge">\${mdl(entry.model)}</span></td>
-          <td class="\${entry.description?'':'dim'}">\${entry.description||'—'}</td>
-          <td>\${fmt(entry.inputTokens)}</td>
-          <td>\${fmt(entry.outputTokens)}</td>
-          <td class="dim">\${fmt(entry.cacheReadTokens)}/\${fmt(entry.cacheWriteTokens)}</td>
-          <td class="cost">\${cost(entry.totalCost)}</td>
-        </tr>\`).join('');
-      const nr=tbody.querySelector('tr.new');
-      if(nr)setTimeout(()=>nr.classList.remove('new'),1500);
-    };
-  </script>
+  function toggleProj(card){
+    const proj=card.dataset.proj;
+    if(card.classList.contains('open')){card.classList.remove('open');openProjects.delete(proj)}
+    else{card.classList.add('open');openProjects.add(proj)}
+  }
+</script>
 </body>
 </html>`;
 
-// ─── Handler registration (called on each Server instance) ───────────────────
+// ─── Handler registration ─────────────────────────────────────────────────────
 
 function registerHandlers(s: Server): void {
 
@@ -213,6 +420,7 @@ s.setRequestHandler(ListToolsRequestSchema, async () => ({
           cache_write_tokens: { type: "number", description: "Cache creation (cache_creation_input_tokens) from usage." },
           model: { type: "string", description: "Model that processed the request (default: claude-opus-4-6)." },
           description: { type: "string", description: "Optional label, e.g. 'chat turn 3' or 'planning phase'." },
+          project: { type: "string", description: "Absolute path of the current project directory (e.g. process.cwd()). Used for project-level cost grouping in the dashboard." },
         },
         required: ["input_tokens", "output_tokens"],
       },
@@ -329,6 +537,7 @@ s.setRequestHandler(CallToolRequestSchema, async (request) => {
         const cacheWriteTokens = Number(a.cache_write_tokens ?? 0);
         const model = (a.model as string | undefined) ?? "claude-opus-4-6";
         const description = a.description as string | undefined;
+        const project = a.project as string | undefined;
 
         const entry = addUsageEntry(
           model,
@@ -337,9 +546,10 @@ s.setRequestHandler(CallToolRequestSchema, async (request) => {
           cacheReadTokens,
           cacheWriteTokens,
           description,
+          project,
         );
 
-        usageEmitter.emit("update"); // push live update to dashboard clients
+        usageEmitter.emit("update");
 
         const session = loadSession();
 
@@ -353,6 +563,7 @@ s.setRequestHandler(CallToolRequestSchema, async (request) => {
                     id: entry.id,
                     model: entry.model,
                     description: entry.description,
+                    project: entry.project,
                     tokens: {
                       input: entry.inputTokens,
                       output: entry.outputTokens,
@@ -412,6 +623,7 @@ s.setRequestHandler(CallToolRequestSchema, async (request) => {
                   },
                   total_cost_usd: Number(t.totalCost.toFixed(8)),
                   total_cost_formatted: formatCost(t.totalCost),
+                  dashboard_url: "http://localhost:8899",
                 },
                 null,
                 2,
@@ -431,6 +643,7 @@ s.setRequestHandler(CallToolRequestSchema, async (request) => {
           timestamp: e.timestamp,
           model: e.model,
           description: e.description,
+          project: e.project,
           tokens: {
             input: e.inputTokens,
             output: e.outputTokens,
@@ -552,7 +765,7 @@ const server = new Server(
 );
 registerHandlers(server);
 
-// ─── Start ────────────────────────────────────────────────────────────────────
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function addCorsHeaders(res: http.ServerResponse) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -560,7 +773,6 @@ function addCorsHeaders(res: http.ServerResponse) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 }
 
-/** Build a fresh MCP Server instance with all tools registered. */
 function createMcpServer(): Server {
   const s = new Server(
     { name: "token-counter-mcp", version: "1.0.0" },
@@ -570,9 +782,15 @@ function createMcpServer(): Server {
   return s;
 }
 
-// ─── Rate limiter (per IP, in-memory) ────────────────────────────────────────
-const RATE_LIMIT = 60;          // max requests per window
-const RATE_WINDOW_MS = 60_000;  // 1-minute window
+function buildSsePayload(): string {
+  const session = loadSession();
+  const grouped = getGroupedHistory();
+  return JSON.stringify({ session, grouped });
+}
+
+// ─── Rate limiter ─────────────────────────────────────────────────────────────
+const RATE_LIMIT = 60;
+const RATE_WINDOW_MS = 60_000;
 
 interface RateBucket { count: number; resetAt: number }
 const rateBuckets = new Map<string, RateBucket>();
@@ -601,15 +819,14 @@ function checkRateLimit(req: http.IncomingMessage, res: http.ServerResponse): bo
   bucket.count++;
   if (bucket.count > RATE_LIMIT) {
     const retryAfter = Math.ceil((bucket.resetAt - now) / 1000);
-    res.writeHead(429, {
-      "Content-Type": "application/json",
-      "Retry-After": String(retryAfter),
-    });
+    res.writeHead(429, { "Content-Type": "application/json", "Retry-After": String(retryAfter) });
     res.end(JSON.stringify({ error: "Rate limit exceeded. Max 60 requests/minute." }));
     return false;
   }
   return true;
 }
+
+// ─── HTTP server (Railway) ────────────────────────────────────────────────────
 
 async function startHttpServer(port: number) {
   const transports = new Map<string, SSEServerTransport>();
@@ -617,59 +834,42 @@ async function startHttpServer(port: number) {
   const httpServer = http.createServer(async (req, res) => {
     addCorsHeaders(res);
 
-    if (req.method === "OPTIONS") {
-      res.writeHead(204);
-      res.end();
-      return;
-    }
+    if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
 
     const url = new URL(req.url ?? "/", `http://localhost:${port}`);
 
-    // Health check — Railway uses this to confirm the service is up
     if (url.pathname === "/health") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ status: "ok", service: "token-counter-mcp", sessions: transports.size }));
       return;
     }
 
-    // Live dashboard UI
     if (url.pathname === "/" && req.method === "GET") {
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
       res.end(DASHBOARD_HTML);
       return;
     }
 
-    // SSE stream for dashboard live updates
     if (url.pathname === "/events" && req.method === "GET") {
-      res.writeHead(200, {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        "Connection": "keep-alive",
-      });
-      const send = () => {
-        try { res.write(`data: ${JSON.stringify(loadSession())}\n\n`); } catch { /* client gone */ }
-      };
+      res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive" });
+      const send = () => { try { res.write(`data: ${buildSsePayload()}\n\n`); } catch { /* client gone */ } };
       send();
       usageEmitter.on("update", send);
-      const heartbeat = setInterval(() => { try { res.write(":ping\n\n"); } catch { /* ignore */ } }, 25000);
-      req.on("close", () => { clearInterval(heartbeat); usageEmitter.off("update", send); });
+      const hb = setInterval(() => { try { res.write(":ping\n\n"); } catch { /* ignore */ } }, 25000);
+      req.on("close", () => { clearInterval(hb); usageEmitter.off("update", send); });
       return;
     }
 
-    // SSE endpoint — MCP client opens a persistent GET connection here
     if (url.pathname === "/sse" && req.method === "GET") {
       if (!checkRateLimit(req, res)) return;
       const transport = new SSEServerTransport("/messages", res);
       transports.set(transport.sessionId, transport);
-
       transport.onclose = () => transports.delete(transport.sessionId);
-
       const sessionServer = createMcpServer();
       await sessionServer.connect(transport);
       return;
     }
 
-    // Message endpoint — MCP client POSTs JSON-RPC messages here
     if (url.pathname === "/messages" && req.method === "POST") {
       if (!checkRateLimit(req, res)) return;
       const sessionId = url.searchParams.get("sessionId") ?? "";
@@ -683,8 +883,7 @@ async function startHttpServer(port: number) {
       return;
     }
 
-    res.writeHead(404);
-    res.end();
+    res.writeHead(404); res.end();
   });
 
   httpServer.listen(port, () => {
@@ -692,6 +891,8 @@ async function startHttpServer(port: number) {
     process.stderr.write(`SSE endpoint: http://0.0.0.0:${port}/sse\n`);
   });
 }
+
+// ─── Local dashboard server (stdio mode) ─────────────────────────────────────
 
 function startDashboardServer(port: number) {
   const srv = http.createServer((req, res) => {
@@ -705,42 +906,50 @@ function startDashboardServer(port: number) {
     }
 
     if (url.pathname === "/events" && req.method === "GET") {
-      res.writeHead(200, {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        "Connection": "keep-alive",
-      });
-      const send = () => {
-        try { res.write(`data: ${JSON.stringify(loadSession())}\n\n`); } catch { /* client gone */ }
-      };
+      res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive" });
+      const send = () => { try { res.write(`data: ${buildSsePayload()}\n\n`); } catch { /* client gone */ } };
       send();
       usageEmitter.on("update", send);
-      const heartbeat = setInterval(() => { try { res.write(":ping\n\n"); } catch { /* ignore */ } }, 25000);
-      req.on("close", () => { clearInterval(heartbeat); usageEmitter.off("update", send); });
+      const hb = setInterval(() => { try { res.write(":ping\n\n"); } catch { /* ignore */ } }, 25000);
+      req.on("close", () => { clearInterval(hb); usageEmitter.off("update", send); });
       return;
     }
 
-    res.writeHead(404);
-    res.end();
+    res.writeHead(404); res.end();
+  });
+
+  srv.on("error", (err: NodeJS.ErrnoException) => {
+    if (err.code === "EADDRINUSE") {
+      process.stderr.write(`Dashboard port ${port} in use, trying ${port + 1}\n`);
+      port += 1;
+      srv.listen(port);
+    } else {
+      process.stderr.write(`Dashboard error: ${err}\n`);
+    }
   });
 
   srv.listen(port, () => {
-    process.stderr.write(`Dashboard → http://localhost:${port}\n`);
+    const addr = srv.address();
+    const actualPort = typeof addr === "object" && addr ? addr.port : port;
+    process.stderr.write(`Dashboard → http://localhost:${actualPort}\n`);
+    server.sendLoggingMessage({
+      level: "info",
+      data: `Token usage dashboard → http://localhost:${actualPort}`,
+    }).catch(() => {/* ignore */});
   });
 }
+
+// ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function main() {
   const port = process.env.PORT ? parseInt(process.env.PORT) : null;
 
   if (port) {
-    // HTTP/SSE mode — Railway sets PORT automatically
     await startHttpServer(port);
   } else {
-    // stdio mode — local Claude Code use
     const transport = new StdioServerTransport();
     await server.connect(transport);
-    // Also serve the live dashboard on a separate port so you can watch usage in a browser
-    startDashboardServer(8080);
+    startDashboardServer(8899);
   }
 }
 

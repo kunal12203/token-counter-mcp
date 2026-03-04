@@ -1,4 +1,4 @@
-<!-- dgc-policy-v4 -->
+<!-- dgc-policy-v9 -->
 # Dual-Graph Context Policy
 
 This project uses a local dual-graph MCP server for efficient context retrieval.
@@ -10,8 +10,9 @@ This project uses a local dual-graph MCP server for efficient context retrieval.
 2. **If `graph_continue` returns `needs_project=true`**: call `graph_scan` with the
    current project directory (`pwd`). Do NOT ask the user.
 
-3. **If `graph_continue` returns `skip=true`**: project is too small for the graph to
-   help. Skip all graph tools and explore normally.
+3. **If `graph_continue` returns `skip=true`**: project has fewer than 5 files.
+   Do NOT do broad or recursive exploration. Read only specific files if their names
+   are mentioned, or ask the user what to work on.
 
 4. **Read `recommended_files`** using `graph_read`.
    - `recommended_files` may contain `file::symbol` entries (e.g. `src/auth.ts::handleLogin`).
@@ -25,6 +26,20 @@ This project uses a local dual-graph MCP server for efficient context retrieval.
    - `confidence=low` -> Call `fallback_rg` at most `max_supplementary_greps` time(s),
      then `graph_read` at most `max_supplementary_files` file(s). Then stop.
 
+## Token Usage
+
+A `token-counter` MCP is available for tracking live token usage.
+
+- To check how many tokens a large file or text will cost **before** reading it:
+  `count_tokens({text: "<content>"})`
+- To log actual usage after a task completes (if the user asks):
+  `log_usage({input_tokens: <est>, output_tokens: <est>, description: "<task>", project: "<absolute-path-to-current-project-dir>"})`
+  Always pass `project` as the absolute path of the working directory (e.g. the primary working directory shown in the environment). This enables folder-wise cost grouping in the dashboard.
+- To show the user their running session cost:
+  `get_session_stats()`
+
+Live dashboard URL is printed at startup next to "Token usage".
+
 ## Rules
 
 - Do NOT use `rg`, `grep`, or bash file exploration before calling `graph_continue`.
@@ -32,4 +47,4 @@ This project uses a local dual-graph MCP server for efficient context retrieval.
 - `max_supplementary_greps` and `max_supplementary_files` are hard caps - never exceed them.
 - Do NOT dump full chat history.
 - Do NOT call `graph_retrieve` more than once per turn.
-- After edits, call `graph_register_edit` with the changed files.
+- After edits, call `graph_register_edit` with the changed files. Use `file::symbol` notation (e.g. `src/auth.ts::handleLogin`) when the edit targets a specific function, class, or hook.
