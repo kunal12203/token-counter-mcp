@@ -10,7 +10,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 
 import { countTextTokens, countMessageTokens, type MessageParam } from "./tokenizer.js";
-import { addUsageEntry, loadSession, resetSession, getHistory, getGroupedHistory } from "./storage.js";
+import { addUsageEntry, loadSession, resetSession, getHistory, getGroupedHistory, type UsageEntry } from "./storage.js";
 import { calculateCost, getPricing, formatCost, formatTokens } from "./costs.js";
 
 // ─── Dashboard event bus ──────────────────────────────────────────────────────
@@ -216,7 +216,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   </div>
 
   <!-- Current session -->
-  <div class="sec-label">Current Session</div>
+  <div class="sec-label" id="sess-section-label">Current Session</div>
   <div class="cards">
     <div class="card"><div class="card-lbl">Est. Cost</div><div class="card-val grad" id="c-cost">—</div><div class="card-note">approximate</div></div>
     <div class="card"><div class="card-lbl">Input Tokens</div><div class="card-val" id="c-in">—</div></div>
@@ -247,6 +247,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 
 </div>
 <script>
+  // ── Utils ──
   function fmt(n){n=n||0;if(n>=1e6)return(n/1e6).toFixed(1)+'M';if(n>=1e3)return(n/1e3).toFixed(1)+'k';return String(n)}
   function fmtCost(u){if(!u||u<0.0001)return '~$0.00';const s=parseFloat(u.toPrecision(2));if(s<0.01)return '~$'+s.toFixed(4);if(s<1)return '~$'+s.toFixed(3);return '~$'+s.toFixed(2)}
   function hhmm(ts){return new Date(ts).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'})}
@@ -254,95 +255,166 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   function mdl(m){return m?(m.replace('claude-','').replace(/-\d{8}$/,'')):'—'}
   function projBase(p){if(!p||p==='(no project)')return '—';try{return p.split('/').filter(Boolean).pop()||p}catch{return p}}
 
-  const badge=document.getElementById('badge');
-  const badgeTxt=document.getElementById('badge-txt');
-  const sessionLine=document.getElementById('session-line');
-  const hdrTime=document.getElementById('hdr-time');
-  const openProjects=new Set();
+  // ── Mode: token in URL = remote/hosted mode ──
+  const token = new URLSearchParams(location.search).get('token') || '';
+  const isRemote = !!token;
+  const LS_KEY = 'tc_v1_' + token;
+  let localEntries = [];
 
-  const es=new EventSource('/events');
-  es.onerror=()=>{badge.className='badge off';badgeTxt.textContent='OFFLINE'};
-  es.onopen=()=>{badge.className='badge';badgeTxt.textContent='LIVE'};
+  const badge      = document.getElementById('badge');
+  const badgeTxt   = document.getElementById('badge-txt');
+  const sessionLine = document.getElementById('session-line');
+  const hdrTime    = document.getElementById('hdr-time');
+  const openProjects = new Set();
 
-  es.onmessage=(e)=>{
-    const d=JSON.parse(e.data);
-    const sess=d.session;
-    const t=sess.totals;
-    const entries=sess.entries||[];
-    const grouped=d.grouped||[];
+  // Remote mode: load localStorage immediately so dashboard works offline
+  if (isRemote) {
+    document.getElementById('sess-section-label').textContent = 'All Time Stats';
+    try { localEntries = JSON.parse(localStorage.getItem(LS_KEY) || '[]'); } catch {}
+    if (localEntries.length) renderState(buildState(localEntries), false);
+  }
 
-    // Header
-    const started=new Date(sess.startedAt);
-    sessionLine.textContent='Session since '+started.toLocaleTimeString()+' · '+entries.length+' call'+(entries.length===1?'':'s');
-    hdrTime.innerHTML='Updated '+new Date().toLocaleTimeString()+'<br><span style="color:var(--text-dim);font-size:.66rem">'+started.toLocaleDateString([],{weekday:'short',month:'short',day:'numeric'})+'</span>';
+  // ── SSE connection ──
+  const sseUrl = isRemote ? '/events?token=' + encodeURIComponent(token) : '/events';
+  const es = new EventSource(sseUrl);
+  es.onerror = () => { badge.className='badge off'; badgeTxt.textContent='OFFLINE'; };
+  es.onopen  = () => { badge.className='badge';     badgeTxt.textContent='LIVE'; };
 
-    // Cards
-    document.getElementById('c-cost').textContent=fmtCost(t.totalCost);
-    document.getElementById('c-in').textContent=fmt(t.inputTokens);
-    document.getElementById('c-out').textContent=fmt(t.outputTokens);
-    document.getElementById('c-cr').textContent=fmt(t.cacheReadTokens);
-    document.getElementById('c-cw').textContent=fmt(t.cacheWriteTokens);
-    document.getElementById('c-n').textContent=entries.length;
-
-    // Projects
-    const pl=document.getElementById('proj-list');
-    if(!grouped.length){
-      pl.innerHTML='<div class="no-proj">No project data yet.<br>Pass a <code>project</code> param to <code>log_usage</code> to track usage by folder.</div>';
+  es.onmessage = (ev) => {
+    const d = JSON.parse(ev.data);
+    if (isRemote) {
+      // Merge server entries (in-memory since last deploy) with full localStorage history
+      const map = new Map(localEntries.map(e => [e.id, e]));
+      for (const e of (d.entries || [])) map.set(e.id, e);
+      localEntries = [...map.values()].sort((a, b) => a.timestamp < b.timestamp ? -1 : 1);
+      if (localEntries.length > 1000) localEntries = localEntries.slice(-1000);
+      try { localStorage.setItem(LS_KEY, JSON.stringify(localEntries)); } catch {}
+      renderState(buildState(localEntries), true);
     } else {
-      const maxCost=Math.max(...grouped.map(g=>g.totalCost),0.001);
-      const currentSessId=sess.sessionId;
-      pl.innerHTML=grouped.map(g=>{
-        const isOpen=openProjects.has(g.project);
-        const barPct=Math.max(4,Math.round(g.totalCost/maxCost*100));
-        const sessHtml=g.sessions.map(s=>{
-          const isActive=s.sessionId===currentSessId;
-          return \`<div class="sess-row">
-            <div class="sess-indicator\${isActive?' active':''}"></div>
-            <span class="sess-time">\${dtFmt(s.startedAt)}</span>
-            <span class="sess-tokens">\${fmt(s.totalInputTokens+s.totalOutputTokens)} tok</span>
-            <span class="sess-calls">\${s.entryCount} call\${s.entryCount===1?'':'s'}</span>
-            <span class="sess-cost">\${fmtCost(s.totalCost)}</span>
-          </div>\`;
-        }).join('');
-        return \`<div class="proj-card\${isOpen?' open':''}" data-proj="\${g.project}">
-          <div class="proj-hdr" onclick="toggleProj(this.parentElement)">
-            <div class="proj-icon">📁</div>
-            <div class="proj-info">
-              <div class="proj-name">\${g.displayName}</div>
-              <div class="proj-path">\${g.project}</div>
-            </div>
-            <div class="proj-stats">
-              <div class="proj-stat">
-                <div class="proj-stat-val">\${fmtCost(g.totalCost)}</div>
-                <div class="proj-stat-lbl">total cost</div>
-              </div>
-              <div class="proj-stat">
-                <div class="proj-stat-val">\${g.sessions.length}</div>
-                <div class="proj-stat-lbl">session\${g.sessions.length===1?'':'s'}</div>
-              </div>
-              <div class="proj-stat" style="display:none">
-                <div class="proj-stat-val">\${fmt(g.totalInputTokens+g.totalOutputTokens)}</div>
-                <div class="proj-stat-lbl">tokens</div>
-              </div>
-            </div>
-            <svg class="chevron" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/>
-            </svg>
-          </div>
-          <div class="proj-bar-wrap"><div class="proj-bar" style="width:\${barPct}%"></div></div>
-          <div class="proj-sessions">\${sessHtml}</div>
-        </div>\`;
-      }).join('');
+      renderLocalState(d);
     }
+  };
 
-    // Recent calls table
-    const tbody=document.getElementById('tbody');
-    if(!entries.length){
-      tbody.innerHTML='<tr><td colspan="8"><div class="empty-cell"><div class="empty-icon">◎</div><div class="empty-text">Waiting for first log_usage call…</div></div></td></tr>';
+  // ── Client-side state builder (remote/token mode) ──
+  // Groups entries by project → sessionId so the projects panel works across machines
+  function buildState(entries) {
+    const totals = {inputTokens:0, outputTokens:0, cacheReadTokens:0, cacheWriteTokens:0, totalCost:0};
+    for (const e of entries) {
+      totals.inputTokens     += e.inputTokens     || 0;
+      totals.outputTokens    += e.outputTokens    || 0;
+      totals.cacheReadTokens  += e.cacheReadTokens  || 0;
+      totals.cacheWriteTokens += e.cacheWriteTokens || 0;
+      totals.totalCost       += e.totalCost       || 0;
+    }
+    const pm = new Map();
+    for (const e of entries) {
+      const proj = e.project || '(no project)';
+      if (!pm.has(proj)) pm.set(proj, new Map());
+      const sm = pm.get(proj);
+      const sid = e.sessionId || 'default';
+      if (!sm.has(sid)) sm.set(sid, {entries:[], startedAt: e.timestamp});
+      sm.get(sid).entries.push(e);
+    }
+    const grouped = [...pm.entries()].map(([project, sm]) => {
+      const allE = [...sm.values()].flatMap(s => s.entries);
+      const sessions = [...sm.entries()].map(([sid, s]) => ({
+        sessionId: sid, startedAt: s.startedAt,
+        totalInputTokens:  s.entries.reduce((a, e) => a + e.inputTokens, 0),
+        totalOutputTokens: s.entries.reduce((a, e) => a + e.outputTokens, 0),
+        totalCost:         s.entries.reduce((a, e) => a + e.totalCost, 0),
+        entryCount:        s.entries.length,
+      })).sort((a, b) => b.startedAt.localeCompare(a.startedAt));
+      return {
+        project, sessions,
+        displayName:       project.split('/').filter(Boolean).pop() || project,
+        totalCost:         allE.reduce((a, e) => a + e.totalCost, 0),
+        totalInputTokens:  allE.reduce((a, e) => a + e.inputTokens, 0),
+        totalOutputTokens: allE.reduce((a, e) => a + e.outputTokens, 0),
+      };
+    }).sort((a, b) => b.totalCost - a.totalCost);
+    return {totals, grouped, entries};
+  }
+
+  // ── Render: remote/token mode (uses buildState output) ──
+  function renderState({totals: t, grouped, entries}, isLive) {
+    const n = entries.length;
+    sessionLine.textContent = n + ' call' + (n===1?'':'s') + ' · ' + grouped.length + ' project' + (grouped.length===1?'':'s') + (isLive ? '' : ' · cached');
+    hdrTime.innerHTML = 'Updated ' + new Date().toLocaleTimeString();
+    document.getElementById('c-cost').textContent = fmtCost(t.totalCost);
+    document.getElementById('c-in').textContent   = fmt(t.inputTokens);
+    document.getElementById('c-out').textContent  = fmt(t.outputTokens);
+    document.getElementById('c-cr').textContent   = fmt(t.cacheReadTokens);
+    document.getElementById('c-cw').textContent   = fmt(t.cacheWriteTokens);
+    document.getElementById('c-n').textContent    = n;
+    renderProjects(grouped, null);
+    renderTable([...entries].reverse().slice(0, 30));
+  }
+
+  // ── Render: local mode (server sends {session, grouped}) ──
+  function renderLocalState(d) {
+    const sess = d.session, t = sess.totals, entries = sess.entries || [], grouped = d.grouped || [];
+    const started = new Date(sess.startedAt);
+    sessionLine.textContent = 'Session since ' + started.toLocaleTimeString() + ' · ' + entries.length + ' call' + (entries.length===1?'':'s');
+    hdrTime.innerHTML = 'Updated ' + new Date().toLocaleTimeString() + '<br><span style="color:var(--text-dim);font-size:.66rem">' + started.toLocaleDateString([],{weekday:'short',month:'short',day:'numeric'}) + '</span>';
+    document.getElementById('c-cost').textContent = fmtCost(t.totalCost);
+    document.getElementById('c-in').textContent   = fmt(t.inputTokens);
+    document.getElementById('c-out').textContent  = fmt(t.outputTokens);
+    document.getElementById('c-cr').textContent   = fmt(t.cacheReadTokens);
+    document.getElementById('c-cw').textContent   = fmt(t.cacheWriteTokens);
+    document.getElementById('c-n').textContent    = entries.length;
+    renderProjects(grouped, sess.sessionId);
+    renderTable([...entries].reverse().slice(0, 30));
+  }
+
+  // ── Shared renderers ──
+  function renderProjects(grouped, currentSessId) {
+    const pl = document.getElementById('proj-list');
+    if (!grouped.length) {
+      pl.innerHTML = '<div class="no-proj">No project data yet.<br>Pass a <code>project</code> param to <code>log_usage</code> to track by folder.</div>';
       return;
     }
-    const rows=[...entries].reverse().slice(0,30);
-    tbody.innerHTML=rows.map((en,i)=>\`<tr class="\${i===0?'flash':''}">
+    const maxCost = Math.max(...grouped.map(g => g.totalCost), 0.001);
+    pl.innerHTML = grouped.map(g => {
+      const isOpen = openProjects.has(g.project);
+      const barPct = Math.max(4, Math.round(g.totalCost / maxCost * 100));
+      const sessHtml = g.sessions.map(s => {
+        const isActive = currentSessId && s.sessionId === currentSessId;
+        return \`<div class="sess-row">
+          <div class="sess-indicator\${isActive ? ' active' : ''}"></div>
+          <span class="sess-time">\${dtFmt(s.startedAt)}</span>
+          <span class="sess-tokens">\${fmt((s.totalInputTokens||0)+(s.totalOutputTokens||0))} tok</span>
+          <span class="sess-calls">\${s.entryCount} call\${s.entryCount===1?'':'s'}</span>
+          <span class="sess-cost">\${fmtCost(s.totalCost)}</span>
+        </div>\`;
+      }).join('');
+      return \`<div class="proj-card\${isOpen?' open':''}" data-proj="\${g.project}">
+        <div class="proj-hdr" onclick="toggleProj(this.parentElement)">
+          <div class="proj-icon">📁</div>
+          <div class="proj-info">
+            <div class="proj-name">\${g.displayName}</div>
+            <div class="proj-path">\${g.project}</div>
+          </div>
+          <div class="proj-stats">
+            <div class="proj-stat"><div class="proj-stat-val">\${fmtCost(g.totalCost)}</div><div class="proj-stat-lbl">total cost</div></div>
+            <div class="proj-stat"><div class="proj-stat-val">\${g.sessions.length}</div><div class="proj-stat-lbl">session\${g.sessions.length===1?'':'s'}</div></div>
+          </div>
+          <svg class="chevron" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/>
+          </svg>
+        </div>
+        <div class="proj-bar-wrap"><div class="proj-bar" style="width:\${barPct}%"></div></div>
+        <div class="proj-sessions">\${sessHtml}</div>
+      </div>\`;
+    }).join('');
+  }
+
+  function renderTable(rows) {
+    const tbody = document.getElementById('tbody');
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="8"><div class="empty-cell"><div class="empty-icon">◎</div><div class="empty-text">Waiting for first log_usage call…</div></div></td></tr>';
+      return;
+    }
+    tbody.innerHTML = rows.map((en, i) => \`<tr class="\${i===0?'flash':''}">
       <td class="dim">\${hhmm(en.timestamp)}</td>
       <td><span class="model-tag">\${mdl(en.model)}</span></td>
       <td class="dim" title="\${en.project||''}">\${projBase(en.project)}</td>
@@ -352,12 +424,12 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       <td class="dim">\${fmt(en.cacheReadTokens)}/\${fmt(en.cacheWriteTokens)}</td>
       <td class="cost-cell">\${fmtCost(en.totalCost)}</td>
     </tr>\`).join('');
-  };
+  }
 
-  function toggleProj(card){
-    const proj=card.dataset.proj;
-    if(card.classList.contains('open')){card.classList.remove('open');openProjects.delete(proj)}
-    else{card.classList.add('open');openProjects.add(proj)}
+  function toggleProj(card) {
+    const proj = card.dataset.proj;
+    if (card.classList.contains('open')) { card.classList.remove('open'); openProjects.delete(proj); }
+    else { card.classList.add('open'); openProjects.add(proj); }
   }
 </script>
 </body>
@@ -550,6 +622,19 @@ s.setRequestHandler(CallToolRequestSchema, async (request) => {
         );
 
         usageEmitter.emit("update");
+
+        // Remote sync: fire-and-forget to REMOTE_DASHBOARD_URL if set
+        const remoteUrl = process.env.REMOTE_DASHBOARD_URL;
+        if (remoteUrl) {
+          const ingestUrl = new URL(`${remoteUrl.replace(/\/$/, "")}/ingest`);
+          const dashToken = process.env.DASHBOARD_TOKEN;
+          if (dashToken) ingestUrl.searchParams.set("token", dashToken);
+          fetch(ingestUrl.toString(), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(entry),
+          }).catch(() => { /* ignore — remote dashboard is optional */ });
+        }
 
         const session = loadSession();
 
@@ -788,6 +873,21 @@ function buildSsePayload(): string {
   return JSON.stringify({ session, grouped });
 }
 
+// ─── In-memory store for HTTP/Railway mode ────────────────────────────────────
+// Per-token, no disk writes, resets on redeploy — pure live relay.
+
+const tokenStore = new Map<string, UsageEntry[]>();
+
+function getTokenEntries(token: string): UsageEntry[] {
+  if (!tokenStore.has(token)) tokenStore.set(token, []);
+  return tokenStore.get(token)!;
+}
+
+// Sends flat entries — client rebuilds state + merges with localStorage
+function buildTokenSsePayload(token: string): string {
+  return JSON.stringify({ entries: getTokenEntries(token) });
+}
+
 // ─── Rate limiter ─────────────────────────────────────────────────────────────
 const RATE_LIMIT = 60;
 const RATE_WINDOW_MS = 60_000;
@@ -851,12 +951,41 @@ async function startHttpServer(port: number) {
     }
 
     if (url.pathname === "/events" && req.method === "GET") {
+      const token = url.searchParams.get("token") ?? "";
       res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive" });
-      const send = () => { try { res.write(`data: ${buildSsePayload()}\n\n`); } catch { /* client gone */ } };
+      const send = () => { try { res.write(`data: ${buildTokenSsePayload(token)}\n\n`); } catch { /* client gone */ } };
       send();
-      usageEmitter.on("update", send);
+      usageEmitter.on(`update:${token}`, send);
       const hb = setInterval(() => { try { res.write(":ping\n\n"); } catch { /* ignore */ } }, 25000);
-      req.on("close", () => { clearInterval(hb); usageEmitter.off("update", send); });
+      req.on("close", () => { clearInterval(hb); usageEmitter.off(`update:${token}`, send); });
+      return;
+    }
+
+    if (url.pathname === "/ingest" && req.method === "POST") {
+      if (!checkRateLimit(req, res)) return;
+      const token = url.searchParams.get("token") ?? "";
+      let body = "";
+      req.on("data", (chunk) => { body += chunk; });
+      req.on("end", () => {
+        try {
+          const entry = JSON.parse(body) as UsageEntry;
+          if (!entry.id || !entry.timestamp || typeof entry.inputTokens !== "number") {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Missing required fields" }));
+            return;
+          }
+          const entries = getTokenEntries(token);
+          entries.push(entry);
+          // Cap per-token memory at 500 entries (full history lives in browser localStorage)
+          if (entries.length > 500) entries.splice(0, entries.length - 500);
+          usageEmitter.emit(`update:${token}`);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true }));
+        } catch {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Invalid JSON" }));
+        }
+      });
       return;
     }
 
@@ -942,14 +1071,20 @@ function startDashboardServer(port: number) {
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function main() {
+  if (process.argv[2] === "setup") {
+    const { runSetup } = await import("./setup.js");
+    await runSetup();
+    process.exit(0);
+  }
+
   const port = process.env.PORT ? parseInt(process.env.PORT) : null;
 
   if (port) {
     await startHttpServer(port);
   } else {
     const transport = new StdioServerTransport();
-    await server.connect(transport);
     startDashboardServer(8899);
+    await server.connect(transport);
   }
 }
 

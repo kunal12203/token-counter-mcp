@@ -12,6 +12,16 @@ claude mcp add --transport sse token-counter https://proud-motivation-production
 
 Restart Claude Code and the tools are ready.
 
+### Interactive Setup (with Dashboard)
+
+For a guided setup that also configures the live dashboard token:
+
+```bash
+npx -y token-counter-mcp --setup
+```
+
+This updates `~/.claude.json` automatically and prints your personal dashboard URL.
+
 ---
 
 ## Available Tools
@@ -36,6 +46,8 @@ How many tokens is this conversation so far?
 Log my last API call: 1500 input, 300 output, claude-opus-4-6
 What's my total spend this session?
 How much would 50k input + 10k output tokens cost on claude-sonnet-4-6?
+Show me my usage history for the last 10 entries.
+Reset my session totals.
 ```
 
 ---
@@ -98,13 +110,23 @@ claude mcp add --transport sse token-counter https://YOUR-URL.up.railway.app/sse
 
 Runs entirely on your machine. Requires Node.js 18+.
 
+### Quickstart (no clone needed)
+
+```bash
+claude mcp add token-counter -- npx -y token-counter-mcp
+```
+
+That's it. Restart Claude Code — the server starts on demand via `npx`.
+
+### Manual install (if you prefer)
+
 ```bash
 git clone https://github.com/krishnakantparashar/TokenCounterMCP
 cd TokenCounterMCP
 npm install && npm run build
 ```
 
-Set your API key for exact counts (optional — falls back to ~98% accurate local counting without it):
+Set your API key for exact counts (optional — falls back to ~97–99% accurate local counting without it):
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-YOUR_KEY_HERE   # macOS/Linux
@@ -121,6 +143,16 @@ claude mcp add token-counter -- node "/absolute/path/to/TokenCounterMCP/dist/ind
 claude mcp add token-counter -- node "C:\path\to\TokenCounterMCP\dist\index.js"
 ```
 
+### Local Dashboard
+
+When running in local stdio mode, a live dashboard is available at:
+
+```
+http://localhost:8899
+```
+
+Open it in your browser to see session totals, per-project cost breakdowns, and usage history.
+
 ---
 
 ## Counting Modes
@@ -134,6 +166,18 @@ The hosted service uses exact counting. Local mode without a key uses `gpt-token
 
 ---
 
+## Supported Models & Pricing
+
+| Model | Input | Output | Cache Read | Cache Write |
+|-------|-------|--------|------------|-------------|
+| `claude-opus-4-6` | $5.00 / 1M | $25.00 / 1M | $0.50 / 1M | $1.25 / 1M |
+| `claude-sonnet-4-6` | $3.00 / 1M | $15.00 / 1M | $0.30 / 1M | $0.75 / 1M |
+| `claude-haiku-4-5` | $1.00 / 1M | $5.00 / 1M | $0.10 / 1M | $0.25 / 1M |
+
+Models not in the table fall back to Sonnet pricing. Versioned model IDs (e.g. `claude-opus-4-6-20260101`) are matched by prefix.
+
+---
+
 ## Rate Limits
 
 The hosted service allows **60 requests per minute** per IP. For higher limits, deploy your own instance.
@@ -142,4 +186,11 @@ The hosted service allows **60 requests per minute** per IP. For higher limits, 
 
 ## Token Storage (local mode only)
 
-Usage history is stored at `~/.claude/token-counter/` (macOS/Linux) or `%USERPROFILE%\.claude\token-counter\` (Windows). The hosted service does not persist your usage data between sessions.
+Usage history is stored at `~/.claude/token-counter/` (macOS/Linux) or `%USERPROFILE%\.claude\token-counter\` (Windows):
+
+| File | Contents |
+|------|----------|
+| `session.json` | Current session totals (reset with `reset_session`) |
+| `history.json` | All-time log, capped at 10,000 entries |
+
+The hosted service does not persist your usage data between sessions.

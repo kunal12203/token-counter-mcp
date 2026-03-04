@@ -4,6 +4,9 @@
   "description": "MCP server that accurately counts and tracks every Claude Code token — input, output, cache, and planning",
   "type": "module",
   "main": "dist/index.js",
+  "bin": {
+    "token-counter-mcp": "dist/index.js"
+  },
   "scripts": {
     "build": "tsc",
     "dev": "tsx watch src/index.ts",
