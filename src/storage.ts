@@ -4,8 +4,9 @@ import os from "os";
 import { calculateCost } from "./costs.js";
 
 const STORAGE_DIR = path.join(os.homedir(), ".claude", "token-counter");
-const SESSION_FILE = path.join(STORAGE_DIR, "session.json");
+export const SESSION_FILE = path.join(STORAGE_DIR, "session.json");
 const HISTORY_FILE = path.join(STORAGE_DIR, "history.json");
+export const DASHBOARD_PORT_FILE = path.join(STORAGE_DIR, "dashboard-port.txt");
 
 export interface UsageEntry {
   id: string;

@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/bin/bash \"/Users/krishnakant/Documents/Personal Projects/TokenCounterMCP/.dual-graph/prime.sh\""
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/bin/bash \"/Users/krishnakant/Documents/Personal Projects/TokenCounterMCP/.dual-graph/prime.sh\""
+          }
+        ]
+      }
+    ]
+  }
+}

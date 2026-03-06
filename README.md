@@ -1,26 +1,38 @@
 # Token Counter MCP
 
-An MCP server that accurately counts and tracks every Claude token — input, output, cache read/write, and planning. Uses the official Anthropic token-counting API for **exact** counts (not estimates).
+Track every Claude token automatically — input, output, cache read/write — with a live local dashboard and per-project cost breakdown. Works in any Claude Code project with zero configuration after a one-time setup.
 
-## Hosted Service — One Command Setup
+---
 
-We run a hosted instance so you don't need your own Anthropic API key or any deployment:
-
-```bash
-claude mcp add --transport sse token-counter https://proud-motivation-production-c4ab.up.railway.app/sse
-```
-
-Restart Claude Code and the tools are ready.
-
-### Interactive Setup (with Dashboard)
-
-For a guided setup that also configures the live dashboard token:
+## Quickstart
 
 ```bash
-npx -y token-counter-mcp --setup
+npx -y token-counter-mcp setup
 ```
 
-This updates `~/.claude.json` automatically and prints your personal dashboard URL.
+Restart Claude Code. That's it.
+
+**What setup does:**
+1. Registers `token-counter-mcp` globally (`--scope user`) — active in every project
+2. Creates `~/.claude/token-counter-stop.sh` — a stop hook that logs tokens after each response
+3. Wires the hook into `~/.claude/settings.json` — no per-project config needed
+
+**Dashboard:** open the URL printed at session start (usually `http://localhost:8899`)
+
+---
+
+## Auto-Tracking
+
+After setup, token usage is logged **automatically after every Claude response** — no manual `log_usage` calls needed. The dashboard shows:
+
+- Session totals (input / output / cache / cost)
+- Per-project breakdown (costs grouped by project folder)
+- Full usage history
+
+To check your running cost mid-session, ask Claude:
+```
+What's my total spend this session?
+```
 
 ---
 
@@ -28,141 +40,39 @@ This updates `~/.claude.json` automatically and prints your personal dashboard U
 
 | Tool | What it does |
 |------|-------------|
-| `count_tokens` | Exact token count for any text or conversation via Anthropic API |
-| `log_usage` | Record actual token usage after an API call (input, output, cache) |
+| `count_tokens` | Estimate token count for any text before reading it |
+| `log_usage` | Manually record token usage (input, output, cache) |
 | `get_session_stats` | Running totals and USD cost for the current session |
 | `get_usage_history` | Last N usage entries across all sessions |
 | `reset_session` | Zero out session totals (history is preserved) |
-| `estimate_cost` | Calculate USD cost for a given token count without making an API call |
+| `estimate_cost` | Calculate USD cost for a given token count |
 
 ---
 
-## Usage in Claude Code
+## Manual Install (alternative to setup)
 
-Once added, ask Claude things like:
-
-```
-How many tokens is this conversation so far?
-Log my last API call: 1500 input, 300 output, claude-opus-4-6
-What's my total spend this session?
-How much would 50k input + 10k output tokens cost on claude-sonnet-4-6?
-Show me my usage history for the last 10 entries.
-Reset my session totals.
-```
-
----
-
-## Self-Hosted Deployment
-
-Want to run your own instance with your own API key?
-
-### macOS
+If you prefer to register the MCP without the stop hook:
 
 ```bash
-# Install Railway CLI
-brew install railway
-
-# Clone and build
-git clone https://github.com/krishnakantparashar/TokenCounterMCP
-cd TokenCounterMCP
-npm install && npm run build
-
-# Deploy
-railway login
-railway init
-railway up
-railway domain
-
-# Set your Anthropic API key
-railway variables set ANTHROPIC_API_KEY=sk-ant-YOUR_KEY_HERE
+claude mcp add --scope user token-counter -- npx -y token-counter-mcp
 ```
 
-### Windows (PowerShell)
-
-```powershell
-# Install Railway CLI (requires Node.js)
-npm install -g @railway/cli
-
-# Clone and build
-git clone https://github.com/krishnakantparashar/TokenCounterMCP
-cd TokenCounterMCP
-npm install
-npm run build
-
-# Deploy
-railway login
-railway init
-railway up
-railway domain
-
-# Set your Anthropic API key
-railway variables set ANTHROPIC_API_KEY=sk-ant-YOUR_KEY_HERE
-```
-
-After deployment, connect with:
-```bash
-claude mcp add --transport sse token-counter https://YOUR-URL.up.railway.app/sse
-```
-
----
-
-## Local stdio Mode
-
-Runs entirely on your machine. Requires Node.js 18+.
-
-### Quickstart (no clone needed)
-
+Or per-project only:
 ```bash
 claude mcp add token-counter -- npx -y token-counter-mcp
 ```
 
-That's it. Restart Claude Code — the server starts on demand via `npx`.
-
-### Manual install (if you prefer)
-
-```bash
-git clone https://github.com/krishnakantparashar/TokenCounterMCP
-cd TokenCounterMCP
-npm install && npm run build
-```
-
-Set your API key for exact counts (optional — falls back to ~97–99% accurate local counting without it):
-
-```bash
-export ANTHROPIC_API_KEY=sk-ant-YOUR_KEY_HERE   # macOS/Linux
-$env:ANTHROPIC_API_KEY="sk-ant-YOUR_KEY_HERE"   # Windows PowerShell
-```
-
-Add to Claude Code:
-
-```bash
-# macOS/Linux
-claude mcp add token-counter -- node "/absolute/path/to/TokenCounterMCP/dist/index.js"
-
-# Windows
-claude mcp add token-counter -- node "C:\path\to\TokenCounterMCP\dist\index.js"
-```
-
-### Local Dashboard
-
-When running in local stdio mode, a live dashboard is available at:
-
-```
-http://localhost:8899
-```
-
-Open it in your browser to see session totals, per-project cost breakdowns, and usage history.
-
 ---
 
-## Counting Modes
+## Local Dashboard
 
-| Mode | Accuracy | Requires |
-|------|----------|----------|
-| Exact (Anthropic API) | 100% | `ANTHROPIC_API_KEY` set on server |
-| Local approximation | ~97–99% | Nothing — works offline |
+The dashboard runs on your machine while Claude Code is active. The actual port is printed at session start:
 
-The hosted service uses exact counting. Local mode without a key uses `gpt-tokenizer` (cl100k_base BPE) as a fallback.
+```
+Token usage dashboard → http://localhost:8899
+```
+
+If port 8899 is taken, it increments automatically (8900, 8901, …). The current port is always saved to `~/.claude/token-counter/dashboard-port.txt` so the stop hook finds it regardless.
 
 ---
 
@@ -174,23 +84,23 @@ The hosted service uses exact counting. Local mode without a key uses `gpt-token
 | `claude-sonnet-4-6` | $3.00 / 1M | $15.00 / 1M | $0.30 / 1M | $0.75 / 1M |
 | `claude-haiku-4-5` | $1.00 / 1M | $5.00 / 1M | $0.10 / 1M | $0.25 / 1M |
 
-Models not in the table fall back to Sonnet pricing. Versioned model IDs (e.g. `claude-opus-4-6-20260101`) are matched by prefix.
+Models not in the table fall back to Sonnet pricing. Versioned IDs (e.g. `claude-sonnet-4-6-20260101`) are matched by prefix.
 
 ---
 
-## Rate Limits
+## Token Storage
 
-The hosted service allows **60 requests per minute** per IP. For higher limits, deploy your own instance.
-
----
-
-## Token Storage (local mode only)
-
-Usage history is stored at `~/.claude/token-counter/` (macOS/Linux) or `%USERPROFILE%\.claude\token-counter\` (Windows):
+Usage is stored locally at `~/.claude/token-counter/`:
 
 | File | Contents |
 |------|----------|
-| `session.json` | Current session totals (reset with `reset_session`) |
+| `session.json` | Current session totals |
 | `history.json` | All-time log, capped at 10,000 entries |
+| `dashboard-port.txt` | Port the dashboard is currently listening on |
 
-The hosted service does not persist your usage data between sessions.
+---
+
+## Requirements
+
+- Node.js 18+
+- Claude Code CLI (`claude`)

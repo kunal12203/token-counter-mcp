@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import fs from "fs";
 import http from "http";
 import { EventEmitter } from "events";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -10,7 +11,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 
 import { countTextTokens, countMessageTokens, type MessageParam } from "./tokenizer.js";
-import { addUsageEntry, loadSession, resetSession, getHistory, getGroupedHistory, type UsageEntry } from "./storage.js";
+import { addUsageEntry, loadSession, resetSession, getHistory, getGroupedHistory, type UsageEntry, SESSION_FILE, DASHBOARD_PORT_FILE } from "./storage.js";
 import { calculateCost, getPricing, formatCost, formatTokens } from "./costs.js";
 
 // ─── Dashboard event bus ──────────────────────────────────────────────────────
@@ -1044,6 +1045,28 @@ function startDashboardServer(port: number) {
       return;
     }
 
+    // POST /log — called by Stop hook for automatic token tracking
+    if (url.pathname === "/log" && req.method === "POST") {
+      let body = "";
+      req.on("data", (chunk) => { body += chunk; });
+      req.on("end", () => {
+        try {
+          const { input_tokens = 0, output_tokens = 0, cache_read_tokens = 0, cache_write_tokens = 0, model = "claude-sonnet-4-6", description = "auto-tracked", project = "" } = JSON.parse(body) as {
+            input_tokens?: number; output_tokens?: number; cache_read_tokens?: number;
+            cache_write_tokens?: number; model?: string; description?: string; project?: string;
+          };
+          addUsageEntry(model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, description, project || undefined);
+          usageEmitter.emit("update");
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true }));
+        } catch {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Invalid JSON" }));
+        }
+      });
+      return;
+    }
+
     res.writeHead(404); res.end();
   });
 
@@ -1061,10 +1084,28 @@ function startDashboardServer(port: number) {
     const addr = srv.address();
     const actualPort = typeof addr === "object" && addr ? addr.port : port;
     process.stderr.write(`Dashboard → http://localhost:${actualPort}\n`);
+    try { fs.writeFileSync(DASHBOARD_PORT_FILE, String(actualPort), "utf8"); } catch { /* ignore */ }
     server.sendLoggingMessage({
       level: "info",
       data: `Token usage dashboard → http://localhost:${actualPort}`,
     }).catch(() => {/* ignore */});
+
+    // Watch session.json for writes from OTHER MCP processes (multiple Claude Code windows).
+    // Each window spawns its own MCP process with its own usageEmitter, so cross-process
+    // log_usage calls only reach the dashboard via this file watcher.
+    let watchDebounce: ReturnType<typeof setTimeout> | null = null;
+    function startSessionWatcher() {
+      try {
+        const watcher = fs.watch(SESSION_FILE, () => {
+          if (watchDebounce) clearTimeout(watchDebounce);
+          watchDebounce = setTimeout(() => usageEmitter.emit("update"), 50);
+        });
+        watcher.on("error", () => setTimeout(startSessionWatcher, 2000));
+      } catch {
+        setTimeout(startSessionWatcher, 2000);
+      }
+    }
+    startSessionWatcher();
   });
 }
 

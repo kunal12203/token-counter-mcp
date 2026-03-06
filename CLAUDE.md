@@ -33,8 +33,7 @@ A `token-counter` MCP is available for tracking live token usage.
 - To check how many tokens a large file or text will cost **before** reading it:
   `count_tokens({text: "<content>"})`
 - To log actual usage after a task completes (if the user asks):
-  `log_usage({input_tokens: <est>, output_tokens: <est>, description: "<task>", project: "<absolute-path-to-current-project-dir>"})`
-  Always pass `project` as the absolute path of the working directory (e.g. the primary working directory shown in the environment). This enables folder-wise cost grouping in the dashboard.
+  `log_usage({input_tokens: <est>, output_tokens: <est>, description: "<task>"})`
 - To show the user their running session cost:
   `get_session_stats()`
 
