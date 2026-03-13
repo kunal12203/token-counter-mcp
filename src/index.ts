@@ -638,10 +638,15 @@ function startDashboardServer(port: number) {
       req.on("data", (chunk) => { body += chunk; });
       req.on("end", () => {
         try {
-          const { input_tokens = 0, output_tokens = 0, cache_read_tokens = 0, cache_write_tokens = 0, model = "claude-sonnet-4-6", description = "auto-tracked", project = "" } = JSON.parse(body) as {
-            input_tokens?: number; output_tokens?: number; cache_read_tokens?: number;
-            cache_write_tokens?: number; model?: string; description?: string; project?: string;
-          };
+          const parsed = JSON.parse(body) as Record<string, unknown>;
+          const input_tokens = Number(parsed.input_tokens ?? 0);
+          const output_tokens = Number(parsed.output_tokens ?? 0);
+          // Accept both field names: cache_read_tokens (MCP tool) and cache_read_input_tokens (stop hook)
+          const cache_read_tokens = Number(parsed.cache_read_tokens ?? parsed.cache_read_input_tokens ?? 0);
+          const cache_write_tokens = Number(parsed.cache_write_tokens ?? parsed.cache_creation_input_tokens ?? 0);
+          const model = String(parsed.model ?? "claude-sonnet-4-6");
+          const description = String(parsed.description ?? "auto-tracked");
+          const project = String(parsed.project ?? "");
           addUsageEntry(model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, description, project || undefined);
           usageEmitter.emit("update");
           res.writeHead(200, { "Content-Type": "application/json" });
