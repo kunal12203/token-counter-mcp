@@ -59,7 +59,7 @@ s.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
           model: {
             type: "string",
-            description: "Model to use for counting (default: claude-opus-4-6).",
+            description: "Model to use for counting (default: claude-sonnet-4-6).",
           },
         },
       },
@@ -77,7 +77,7 @@ s.setRequestHandler(ListToolsRequestSchema, async () => ({
           output_tokens: { type: "number", description: "Output tokens from the API response usage object." },
           cache_read_tokens: { type: "number", description: "Cache read (cache_read_input_tokens) from usage." },
           cache_write_tokens: { type: "number", description: "Cache creation (cache_creation_input_tokens) from usage." },
-          model: { type: "string", description: "Model that processed the request (default: claude-opus-4-6)." },
+          model: { type: "string", description: "Model that processed the request (default: claude-sonnet-4-6)." },
           description: { type: "string", description: "Optional label, e.g. 'chat turn 3' or 'planning phase'." },
           project: { type: "string", description: "Absolute path of the current project directory (e.g. process.cwd()). Used for project-level cost grouping in the dashboard." },
         },
@@ -130,7 +130,7 @@ s.setRequestHandler(ListToolsRequestSchema, async () => ({
           output_tokens: { type: "number" },
           cache_read_tokens: { type: "number" },
           cache_write_tokens: { type: "number" },
-          model: { type: "string", description: "Default: claude-opus-4-6" },
+          model: { type: "string", description: "Default: claude-sonnet-4-6" },
         },
         required: ["input_tokens", "output_tokens"],
       },
@@ -148,7 +148,7 @@ s.setRequestHandler(CallToolRequestSchema, async (request) => {
     switch (name) {
       // ── count_tokens ──────────────────────────────────────────────────────
       case "count_tokens": {
-        const model = (a.model as string | undefined) ?? "claude-opus-4-6";
+        const model = (a.model as string | undefined) ?? "claude-sonnet-4-6";
 
         let result: { inputTokens: number; model: string; exact: boolean; method: string };
         if (a.messages) {
@@ -194,7 +194,7 @@ s.setRequestHandler(CallToolRequestSchema, async (request) => {
         const outputTokens = Number(a.output_tokens ?? 0);
         const cacheReadTokens = Number(a.cache_read_tokens ?? 0);
         const cacheWriteTokens = Number(a.cache_write_tokens ?? 0);
-        const model = (a.model as string | undefined) ?? "claude-opus-4-6";
+        const model = (a.model as string | undefined) ?? "claude-sonnet-4-6";
         const description = a.description as string | undefined;
         const project = a.project as string | undefined;
 
@@ -370,7 +370,7 @@ s.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       // ── estimate_cost ─────────────────────────────────────────────────────
       case "estimate_cost": {
-        const model = (a.model as string | undefined) ?? "claude-opus-4-6";
+        const model = (a.model as string | undefined) ?? "claude-sonnet-4-6";
         const inputTokens = Number(a.input_tokens ?? 0);
         const outputTokens = Number(a.output_tokens ?? 0);
         const cacheReadTokens = Number(a.cache_read_tokens ?? 0);
@@ -639,15 +639,19 @@ function startDashboardServer(port: number) {
       req.on("end", () => {
         try {
           const parsed = JSON.parse(body) as Record<string, unknown>;
-          const input_tokens = Number(parsed.input_tokens ?? 0);
           const output_tokens = Number(parsed.output_tokens ?? 0);
           // Accept both field names: cache_read_tokens (MCP tool) and cache_read_input_tokens (stop hook)
           const cache_read_tokens = Number(parsed.cache_read_tokens ?? parsed.cache_read_input_tokens ?? 0);
           const cache_write_tokens = Number(parsed.cache_write_tokens ?? parsed.cache_creation_input_tokens ?? 0);
+          // Stop hooks send input_tokens as total (raw+cache) and raw_input_tokens separately.
+          // Use raw_input_tokens for cost calc to avoid double-counting cache tokens.
+          const raw_input = Number(parsed.raw_input_tokens ?? 0);
+          const total_input = Number(parsed.input_tokens ?? 0);
+          const input_tokens = raw_input > 0 ? raw_input : (total_input - cache_read_tokens - cache_write_tokens);
           const model = String(parsed.model ?? "claude-sonnet-4-6");
           const description = String(parsed.description ?? "auto-tracked");
           const project = String(parsed.project ?? "");
-          addUsageEntry(model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, description, project || undefined);
+          addUsageEntry(model, Math.max(0, input_tokens), output_tokens, cache_read_tokens, cache_write_tokens, description, project || undefined);
           usageEmitter.emit("update");
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ ok: true }));

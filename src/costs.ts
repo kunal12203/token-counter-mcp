@@ -8,43 +8,43 @@ export interface ModelPricing {
 
 export const MODEL_PRICING: Record<string, ModelPricing> = {
   "claude-opus-4-6": {
-    inputPerMillion: 5.0,
-    outputPerMillion: 25.0,
-    cacheReadPerMillion: 0.5,    // 10% of input
-    cacheWritePerMillion: 1.25,  // 25% of input
+    inputPerMillion: 15.0,
+    outputPerMillion: 75.0,
+    cacheReadPerMillion: 1.50,
+    cacheWritePerMillion: 18.75,
   },
   "claude-sonnet-4-6": {
     inputPerMillion: 3.0,
     outputPerMillion: 15.0,
-    cacheReadPerMillion: 0.3,
-    cacheWritePerMillion: 0.75,
+    cacheReadPerMillion: 0.30,
+    cacheWritePerMillion: 3.75,
   },
   "claude-haiku-4-5": {
     inputPerMillion: 1.0,
     outputPerMillion: 5.0,
-    cacheReadPerMillion: 0.1,
-    cacheWritePerMillion: 0.25,
-  },
-  // Legacy / fallback
-  "claude-opus-4-5": {
-    inputPerMillion: 5.0,
-    outputPerMillion: 25.0,
-    cacheReadPerMillion: 0.5,
+    cacheReadPerMillion: 0.10,
     cacheWritePerMillion: 1.25,
+  },
+  // Legacy
+  "claude-opus-4-5": {
+    inputPerMillion: 15.0,
+    outputPerMillion: 75.0,
+    cacheReadPerMillion: 1.50,
+    cacheWritePerMillion: 18.75,
   },
   "claude-sonnet-4-5": {
     inputPerMillion: 3.0,
     outputPerMillion: 15.0,
-    cacheReadPerMillion: 0.3,
-    cacheWritePerMillion: 0.75,
+    cacheReadPerMillion: 0.30,
+    cacheWritePerMillion: 3.75,
   },
 };
 
 const DEFAULT_PRICING: ModelPricing = {
   inputPerMillion: 3.0,
   outputPerMillion: 15.0,
-  cacheReadPerMillion: 0.3,
-  cacheWritePerMillion: 0.75,
+  cacheReadPerMillion: 0.30,
+  cacheWritePerMillion: 3.75,
 };
 
 export function getPricing(model: string): ModelPricing {
