@@ -639,19 +639,16 @@ function startDashboardServer(port: number) {
       req.on("end", () => {
         try {
           const parsed = JSON.parse(body) as Record<string, unknown>;
+          const input_tokens = Number(parsed.input_tokens ?? 0);
           const output_tokens = Number(parsed.output_tokens ?? 0);
           // Accept both field names: cache_read_tokens (MCP tool) and cache_read_input_tokens (stop hook)
           const cache_read_tokens = Number(parsed.cache_read_tokens ?? parsed.cache_read_input_tokens ?? 0);
           const cache_write_tokens = Number(parsed.cache_write_tokens ?? parsed.cache_creation_input_tokens ?? 0);
-          // Stop hooks send input_tokens as total (raw+cache) and raw_input_tokens separately.
-          // Use raw_input_tokens for cost calc to avoid double-counting cache tokens.
-          const raw_input = Number(parsed.raw_input_tokens ?? 0);
-          const total_input = Number(parsed.input_tokens ?? 0);
-          const input_tokens = raw_input > 0 ? raw_input : (total_input - cache_read_tokens - cache_write_tokens);
           const model = String(parsed.model ?? "claude-sonnet-4-6");
           const description = String(parsed.description ?? "auto-tracked");
           const project = String(parsed.project ?? "");
-          addUsageEntry(model, Math.max(0, input_tokens), output_tokens, cache_read_tokens, cache_write_tokens, description, project || undefined);
+          // input_tokens is total (raw+cache). calculateCost subtracts cache to get raw for pricing.
+          addUsageEntry(model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, description, project || undefined);
           usageEmitter.emit("update");
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ ok: true }));

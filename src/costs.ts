@@ -75,7 +75,9 @@ export function calculateCost(
   cacheWriteTokens = 0,
 ): TokenCost {
   const pricing = getPricing(model);
-  const inputCost = (inputTokens / 1_000_000) * pricing.inputPerMillion;
+  // inputTokens may be total (raw+cache) — subtract cache to get raw for cost calc
+  const rawInput = Math.max(0, inputTokens - cacheReadTokens - cacheWriteTokens);
+  const inputCost = (rawInput / 1_000_000) * pricing.inputPerMillion;
   const outputCost = (outputTokens / 1_000_000) * pricing.outputPerMillion;
   const cacheReadCost = (cacheReadTokens / 1_000_000) * pricing.cacheReadPerMillion;
   const cacheWriteCost = (cacheWriteTokens / 1_000_000) * pricing.cacheWritePerMillion;
