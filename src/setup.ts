@@ -146,6 +146,9 @@ function writeStopHookPowershell() {
 function writeStopHook() {
   if (IS_WIN) {
     writeStopHookPowershell();
+    // Clean up old .sh file that doesn't work on Windows
+    const oldSh = path.join(CLAUDE_DIR, "token-counter-stop.sh");
+    if (fs.existsSync(oldSh)) fs.unlinkSync(oldSh);
   } else {
     writeStopHookBash();
   }
@@ -160,9 +163,26 @@ function addStopHook() {
     ? `powershell -NoProfile -File "${STOP_SCRIPT}"`
     : `bash "${STOP_SCRIPT}"`;
 
-  const existing = (hooks.Stop ?? []) as Array<{ matcher: string; hooks: Array<{ type: string; command: string }> }>;
-  // Also match old /bin/bash variant so we don't duplicate hooks after upgrade
-  const alreadyIn = existing.some(h => h.hooks?.some(hh => hh.command === stopHookCmd || hh.command === `/bin/bash "${STOP_SCRIPT}"`));
+  let existing = (hooks.Stop ?? []) as Array<{ matcher: string; hooks: Array<{ type: string; command: string }> }>;
+
+  // Remove old broken hooks: /bin/bash on Windows, or old .sh/.ps1 variant after platform switch
+  const oldShScript = path.join(CLAUDE_DIR, "token-counter-stop.sh");
+  const oldPs1Script = path.join(CLAUDE_DIR, "token-counter-stop.ps1");
+  const stalePatterns = [
+    `/bin/bash "${oldShScript}"`,
+    `/bin/bash "${oldPs1Script}"`,
+    `bash "${IS_WIN ? oldShScript : ""}"`,  // .sh hook on Windows is stale
+  ];
+  if (IS_WIN) {
+    // On Windows, remove any bash-based hooks (old or broken)
+    stalePatterns.push(`bash "${oldShScript}"`, `/bin/bash "${oldShScript}"`);
+  }
+  existing = existing.filter(h => {
+    const cmds = h.hooks?.map(hh => hh.command) ?? [];
+    return !cmds.some(cmd => stalePatterns.includes(cmd));
+  });
+
+  const alreadyIn = existing.some(h => h.hooks?.some(hh => hh.command === stopHookCmd));
   if (!alreadyIn) {
     existing.push({ matcher: "", hooks: [{ type: "command", command: stopHookCmd }] });
   }
