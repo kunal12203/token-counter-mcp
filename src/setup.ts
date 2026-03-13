@@ -3,10 +3,13 @@ import path from "path";
 import os from "os";
 import { execSync } from "child_process";
 
+const IS_WIN = process.platform === "win32";
 const HOME = os.homedir();
 const CLAUDE_DIR = path.join(HOME, ".claude");
 const GLOBAL_SETTINGS = path.join(CLAUDE_DIR, "settings.json");
-const STOP_SH = path.join(CLAUDE_DIR, "token-counter-stop.sh");
+const STOP_SCRIPT = IS_WIN
+  ? path.join(CLAUDE_DIR, "token-counter-stop.ps1")
+  : path.join(CLAUDE_DIR, "token-counter-stop.sh");
 
 function ensureDir(p: string) {
   if (!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true });
@@ -23,17 +26,25 @@ function writeJson(p: string, data: unknown) {
 
 function registerMcp(): "ok" | "fallback" {
   try {
-    execSync(
-      "claude mcp remove token-counter --scope user 2>/dev/null; claude mcp add --scope user token-counter -- npx -y token-counter-mcp",
-      { stdio: "ignore", shell: "/bin/bash" },
-    );
+    if (IS_WIN) {
+      // On Windows, use powershell to chain remove + add.
+      execSync(
+        'claude mcp remove token-counter --scope user 2>$null; claude mcp add --scope user token-counter -- npx -y token-counter-mcp',
+        { stdio: "ignore", shell: "powershell.exe" },
+      );
+    } else {
+      execSync(
+        "claude mcp remove token-counter --scope user 2>/dev/null; claude mcp add --scope user token-counter -- npx -y token-counter-mcp",
+        { stdio: "ignore", shell: "/bin/bash" },
+      );
+    }
     return "ok";
   } catch {
     return "fallback";
   }
 }
 
-function writeStopHook() {
+function writeStopHookBash() {
   // Build the bash script without using TS template literals for the bash variables
   // to avoid conflicts between bash $VAR syntax and TS template literal ${VAR}.
   const D = "$";  // shorthand to embed $ chars safely
@@ -70,7 +81,40 @@ function writeStopHook() {
     "exit 0",
     "",
   ];
-  fs.writeFileSync(STOP_SH, lines.join("\n"), { encoding: "utf8", mode: 0o755 });
+  fs.writeFileSync(STOP_SCRIPT, lines.join("\n"), { encoding: "utf8", mode: 0o755 });
+}
+
+function writeStopHookPowershell() {
+  // PowerShell stop hook: reads transcript from stdin JSON, estimates tokens, POSTs to dashboard.
+  const lines = [
+    "$hookInput = [Console]::In.ReadToEnd()",
+    "try { $transcript = ($hookInput | ConvertFrom-Json).transcript_path } catch { $transcript = '' }",
+    "if ($transcript -and (Test-Path $transcript)) {",
+    "    try {",
+    "        $lines = Get-Content $transcript -Raw | ConvertFrom-Json -AsHashtable -ErrorAction SilentlyContinue",
+    "        if (-not $lines) { $lines = (Get-Content $transcript) | ForEach-Object { $_ | ConvertFrom-Json -ErrorAction SilentlyContinue } | Where-Object { $_ } }",
+    "        $last = ($lines | Where-Object { $_.type -eq 'assistant' }) | Select-Object -Last 1",
+    "        $chars = ([string]($last.message.content)).Length",
+    "        $out = [Math]::Max(1, [int]($chars / 4)); $in = $out * 4",
+    '        $portFile = Join-Path $env:USERPROFILE ".claude\\token-counter\\dashboard-port.txt"',
+    '        $dashPort = if (Test-Path $portFile) { (Get-Content $portFile -Raw).Trim() } else { "8899" }',
+    '        $projDir = Split-Path (Split-Path $transcript) -Leaf',
+    "        $projectPath = ($projDir -replace '^-','/' -replace '-','/')",
+    '        $body = "{`"input_tokens`":$in,`"output_tokens`":$out,`"model`":`"claude-sonnet-4-6`",`"description`":`"auto`",`"project`":`"$projectPath`"}"',
+    '        Invoke-RestMethod -Method Post -Uri "http://localhost:$dashPort/log" -ContentType "application/json" -Body $body -ErrorAction SilentlyContinue | Out-Null',
+    "    } catch {}",
+    "}",
+    "",
+  ];
+  fs.writeFileSync(STOP_SCRIPT, lines.join("\r\n"), { encoding: "utf8" });
+}
+
+function writeStopHook() {
+  if (IS_WIN) {
+    writeStopHookPowershell();
+  } else {
+    writeStopHookBash();
+  }
 }
 
 function addStopHook() {
@@ -78,7 +122,9 @@ function addStopHook() {
   const settings = readJson(GLOBAL_SETTINGS);
   const hooks = (settings.hooks ?? {}) as Record<string, unknown[]>;
 
-  const stopHookCmd = `/bin/bash "${STOP_SH}"`;
+  const stopHookCmd = IS_WIN
+    ? `powershell -NoProfile -File "${STOP_SCRIPT}"`
+    : `/bin/bash "${STOP_SCRIPT}"`;
 
   const existing = (hooks.Stop ?? []) as Array<{ matcher: string; hooks: Array<{ type: string; command: string }> }>;
   const alreadyIn = existing.some(h => h.hooks?.some(hh => hh.command === stopHookCmd));
@@ -108,7 +154,7 @@ export async function runSetup(): Promise<void> {
   // 2. Write global stop hook script
   process.stdout.write("Writing stop hook script... ");
   writeStopHook();
-  console.log(`done. (${STOP_SH})`);
+  console.log(`done. (${STOP_SCRIPT})`);
 
   // 3. Register Stop hook in global settings.json
   process.stdout.write("Adding Stop hook to ~/.claude/settings.json... ");
