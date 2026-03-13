@@ -1,6 +1,6 @@
 {
   "name": "token-counter-mcp",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "MCP server that accurately counts and tracks every Claude Code token — input, output, cache, and planning",
   "type": "module",
   "main": "dist/index.js",
